@@ -1,142 +1,61 @@
-# =============================================================================
-# Multi-stage Dockerfile for Powerhouse Document Model Packages
-# Produces two images: connect (frontend) and switchboard (backend)
+# The document-conversion service as its own container.
 #
-# Build commands:
-#   docker build --target connect -t <registry>/<project>/connect:<tag> .
-#   docker build --target switchboard -t <registry>/<project>/switchboard:<tag> .
-# =============================================================================
+# It is deliberately NOT a Powerhouse reactor package and NOT part of the vault
+# image: `docling.rs` publishes only `linux-x64-gnu`, `linux-arm64-gnu` and
+# `win32-x64-msvc` builds — there is no musl build — so it cannot load inside
+# the alpine Switchboard image. It is also its own process for a second reason:
+# the binding keeps ~1.36 GB of ONNX weights resident once it has converted a
+# PDF, and the Switchboard should not carry that.
+#
+#   docker build -t docling-service .
+#   docker run -p 5011:5011 -v docling-models:/models -e DOCLING_RS_HOME=/models docling-service
+#   # once, into the volume — ~700 MB, not fetched at build or boot:
+#   docker run --rm -v docling-models:/models -e DOCLING_RS_HOME=/models docling-service npm run fetch-models
+#
+# Then point the vault's Switchboard at it: CONVERT_SERVICE_URL=http://<host>:5011
+#
+# The base must be **trixie, not bookworm**. `docling.rs` >= 1.58 is linked
+# against GCC 14's libstdc++ and needs `_M_replace_cold`, which first appears in
+# libstdc++.so.6.0.33. Debian bookworm ships 6.0.30, so `node:24-slim` builds
+# cleanly and then fails at run time with `undefined symbol: _ZNSt7__cxx11...`,
+# which surfaces only as `/health -> {"ok": false}`. Verified, not assumed.
+FROM node:24-trixie-slim AS docling
 
-# -----------------------------------------------------------------------------
-# Base stage: Common setup for building
-# -----------------------------------------------------------------------------
-FROM node:24-alpine AS base
-
-WORKDIR /app
-
-# Install build dependencies
-RUN apk add --no-cache python3 make g++ git bash \
-    && ln -sf /usr/bin/python3 /usr/bin/python
-
-# Setup pnpm
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-# Configure JSR registry
-RUN pnpm config set @jsr:registry https://npm.jsr.io
-
-# Build arguments
-ARG TAG=latest
-ARG PH_CONNECT_BASE_PATH="/"
-
-# Install ph-cmd, prisma, and oxfmt globally
-RUN pnpm add -g ph-cmd@$TAG prisma@5.17.0 oxfmt
-
-# Initialize project based on tag (dev/staging/latest)
-RUN case "$TAG" in \
-        *dev*) ph init project --dev --package-manager pnpm ;; \
-        *staging*) ph init project --staging --package-manager pnpm ;; \
-        *) ph init project --package-manager pnpm ;; \
-    esac
-
-WORKDIR /app/project
-
-# Copy package files for the current package
-COPY package.json pnpm-lock.yaml ./
-
-# Install the current package (this package)
-ARG PACKAGE_NAME
-RUN if [ -n "$PACKAGE_NAME" ]; then \
-        echo "Installing package: $PACKAGE_NAME"; \
-        ph install "$PACKAGE_NAME"; \
-    else \
-        echo "Warning: PACKAGE_NAME not provided, using local build"; \
-        pnpm install; \
-    fi
-
-# Regenerate Prisma client for Alpine Linux
-RUN prisma generate --schema node_modules/document-drive/dist/prisma/schema.prisma || true
-
-# -----------------------------------------------------------------------------
-# Connect build stage
-# -----------------------------------------------------------------------------
-FROM base AS connect-builder
-
-ARG PH_CONNECT_BASE_PATH="/"
-
-# Build connect
-RUN ph connect build --base ${PH_CONNECT_BASE_PATH}
-
-# -----------------------------------------------------------------------------
-# Connect final stage - nginx
-# -----------------------------------------------------------------------------
-FROM nginx:alpine AS connect
-
-# Install envsubst for config templating
-RUN apk add --no-cache gettext
-
-# Copy nginx config template
-COPY docker/nginx.conf /etc/nginx/nginx.conf.template
-
-# Copy built static files from build stage
-COPY --from=connect-builder /app/project/.ph/connect-build/dist /var/www/html/project
-
-# Environment variables for nginx config
-ENV PORT=3001
-ENV PH_CONNECT_BASE_PATH="/"
-
-# Copy and setup entrypoint
-COPY docker/connect-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
-
-EXPOSE ${PORT}
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget -q --spider http://localhost:${PORT}/health || exit 1
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
-
-# -----------------------------------------------------------------------------
-# Switchboard final stage - node runtime
-# -----------------------------------------------------------------------------
-FROM node:24-alpine AS switchboard
+# Rung 2 (Tesseract via ocrmypdf) and the PDF repair tools qpdf/ghostscript,
+# which rescue PDFs that pdfium refuses. Poppler arrives with ocrmypdf; add more
+# tesseract-ocr-<lang> packages for other languages.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       ocrmypdf tesseract-ocr tesseract-ocr-eng ghostscript qpdf ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apk add --no-cache curl openssl
+# Dependencies first, so a source edit does not re-resolve the tree. Scripts are
+# skipped for the install and the one native binding is rebuilt explicitly.
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev --ignore-scripts \
+  && npm rebuild docling.rs
 
-# Setup pnpm
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY src ./src
 
-# Configure JSR registry
-RUN pnpm config set @jsr:registry https://npm.jsr.io
+# The models live on a volume, not in the image: they are ~700 MB and change on
+# their own cadence. DOCLING_RS_HOME is what both the server and fetch-models
+# read; without it they fall back to the app root, which is ephemeral.
+ENV DOCLING_RS_HOME=/models \
+    CONVERT_SERVICE_HOST=0.0.0.0 \
+    CONVERT_SERVICE_PORT=5011 \
+    CONVERT_OCR_JOBS=4 \
+    CONVERT_AUTO_OCR_SECONDS=60
+VOLUME ["/models"]
+EXPOSE 5011
 
-# Install ph-cmd and prisma globally (needed at runtime)
-ARG TAG=latest
-RUN pnpm add -g ph-cmd@$TAG prisma@5.17.0
+# `ok` means the backend loaded; `ready` additionally means the models are on
+# disk. Health here is the former: a service that converts docx/html/md but has
+# no PDF models yet is working, and the vault's /convert/health reports the
+# difference rather than hiding it.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.CONVERT_SERVICE_PORT||5011)+'/health').then(r=>r.json()).then(b=>process.exit(b.ok?0:1)).catch(()=>process.exit(1))"
 
-# Copy built project from build stage
-COPY --from=base /app/project /app/project
-
-WORKDIR /app/project
-
-# Copy entrypoint
-COPY docker/switchboard-entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-
-# Environment variables
-ENV NODE_ENV=production
-ENV PORT=3000
-ENV DATABASE_URL=""
-ENV SKIP_DB_MIGRATIONS="false"
-
-EXPOSE ${PORT}
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
-
-ENTRYPOINT ["/app/entrypoint.sh"]
+# `nice` so conversion yields to whatever else shares the host.
+CMD ["nice", "-n", "10", "node", "src/server.ts"]
