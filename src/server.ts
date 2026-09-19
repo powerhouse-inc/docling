@@ -103,6 +103,14 @@ const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // still wins, which is the knob a real deployment sets (a mounted volume).
 process.env.DOCLING_RS_HOME ??= PACKAGE_ROOT;
 const MAX_BYTES = Number(process.env.CONVERT_MAX_BYTES ?? 256 * 1024 * 1024);
+/**
+ * How often to emit a keep-alive byte during a conversion, in ms. 0 disables it.
+ *
+ * Default 15 s: comfortably inside nginx's 60 s `proxy_read_timeout`, most cloud
+ * load balancers' 60 s, and Cloudflare's ~100 s, so the tightest common hop
+ * still sees traffic long before it gives up. See `startHeartbeat`.
+ */
+const HEARTBEAT_MS = Number(process.env.CONVERT_HEARTBEAT_MS ?? 15_000);
 
 /** Prefix for this service's per-request scratch dirs, so it can find its own. */
 const TMP_PREFIX = "vault-convert-";
@@ -220,12 +228,67 @@ function runtimeName(): string {
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
+  // A heartbeat may already have opened the response to keep a proxy from
+  // timing the connection out (see `startHeartbeat`). Once headers are on the
+  // wire the status is fixed at 200, so the outcome has to travel in the body:
+  // `deferredStatus` carries the code this would have been. Every existing
+  // error path funnels through here, so they all keep working unchanged.
+  const payload = JSON.stringify(
+    res.headersSent && status >= 400 && body && typeof body === "object"
+      ? { ...(body as Record<string, unknown>), deferredStatus: status }
+      : body,
+  );
+  if (res.headersSent) {
+    res.end(payload);
+    return;
+  }
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+/**
+ * Keep a slow conversion's connection from being culled by an idle timeout.
+ *
+ * A 238-page book takes minutes, and the client allows 30 of them — but nginx's
+ * `proxy_read_timeout` defaults to 60 s, most cloud load balancers to 60, and
+ * Cloudflare to ~100. Whichever hop is tightest cuts the connection first, and
+ * the client sees a network error rather than anything about the document.
+ *
+ * Proxies reset that timer on **any** byte from upstream, so this writes a
+ * single space at intervals. JSON ignores leading whitespace, so a client that
+ * calls `response.json()` parses the eventual body unchanged and needs no
+ * knowledge of this at all.
+ *
+ * The cost is honest and worth stating: the first heartbeat commits the status
+ * to 200, so an error *after* that point cannot be a 4xx/5xx. `sendJson` puts
+ * the real code in `deferredStatus` instead. Errors that arrive before the
+ * first interval — the overwhelming majority, since bad input is rejected in
+ * milliseconds — are unaffected.
+ *
+ * Set `CONVERT_HEARTBEAT_MS=0` to switch it off where no proxy sits in front.
+ */
+function startHeartbeat(res: ServerResponse, intervalMs: number) {
+  if (intervalMs <= 0) return { stop: () => {} };
+
+  const timer = setInterval(() => {
+    if (res.writableEnded) return;
+    if (!res.headersSent) {
+      res.writeHead(200, {
+        "content-type": "application/json",
+        // No content-length: the body is now chunked, since its size is not
+        // known until the conversion that is still running finishes.
+        "cache-control": "no-store",
+      });
+    }
+    res.write(" ");
+  }, intervalMs);
+  // Do not hold the process open for a heartbeat.
+  timer.unref();
+
+  return { stop: () => clearInterval(timer) };
 }
 
 /** Read the raw request body, refusing anything over `MAX_BYTES`. */
@@ -1503,7 +1566,15 @@ const server = createServer((req, res) => {
         return;
       }
       if (req.method === "POST" && url.pathname === "/convert") {
-        await handleConvert(req, res, url);
+        // The heartbeat starts before the work, not after the body is read: a
+        // large upload over a slow link is itself long enough to trip an idle
+        // timeout, and nothing has been written yet at that point.
+        const heartbeat = startHeartbeat(res, HEARTBEAT_MS);
+        try {
+          await handleConvert(req, res, url);
+        } finally {
+          heartbeat.stop();
+        }
         return;
       }
       if (url.pathname === "/") {

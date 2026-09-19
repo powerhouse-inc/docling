@@ -15,6 +15,16 @@ Knowledge Vault reaches it by URL only (`CONVERT_SERVICE_URL`), through its own
 `GET /health` returning `{"ok": false}`. Verify a base change by running the
 container and reading `/health`, never by a green build.
 
+**A conversion holds one HTTP connection for its whole duration.** There is no
+job-and-poll API: `POST /convert` returns the result, and `GET /progress/:job`
+only reports on a conversion already in flight. A big PDF therefore keeps the
+socket open for minutes, which every common proxy default kills at 60–100 s. The
+service writes a space every `CONVERT_HEARTBEAT_MS` so proxies see traffic; the
+cost is that the first heartbeat fixes the status at `200`, so later errors carry
+`deferredStatus` in the body instead. Anything that changes when the response
+starts must keep that contract — and note `sendJson` is the single choke point
+where it is enforced, which is why every error path already works with it.
+
 **It cannot live in the Switchboard image at all.** `docling.rs` publishes
 `linux-x64-gnu`, `linux-arm64-gnu` and `win32-x64-msvc` — no musl build — and
 the Switchboard image is alpine. That is why this repository exists.

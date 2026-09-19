@@ -47,11 +47,17 @@ COPY src ./src
 # The models live on a volume, not in the image: they are ~700 MB and change on
 # their own cadence. DOCLING_RS_HOME is what both the server and fetch-models
 # read; without it they fall back to the app root, which is ephemeral.
+#
+# CONVERT_HEARTBEAT_MS keeps a slow conversion's connection alive through a
+# reverse proxy: nginx's proxy_read_timeout defaults to 60 s and most cloud load
+# balancers to the same, while a large PDF takes minutes. 15 s is comfortably
+# inside every common default. Set it to 0 when nothing proxies this service.
 ENV DOCLING_RS_HOME=/models \
     CONVERT_SERVICE_HOST=0.0.0.0 \
     CONVERT_SERVICE_PORT=5011 \
     CONVERT_OCR_JOBS=4 \
-    CONVERT_AUTO_OCR_SECONDS=60
+    CONVERT_AUTO_OCR_SECONDS=60 \
+    CONVERT_HEARTBEAT_MS=15000
 VOLUME ["/models"]
 EXPOSE 5011
 

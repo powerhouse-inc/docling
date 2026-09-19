@@ -76,6 +76,31 @@ working service with a pending download. The vault surfaces both.
 | `CONVERT_OCR_JOBS`         | `4`         | ocrmypdf parallelism                     |
 | `CONVERT_AUTO_OCR_SECONDS` | `60`        | Budget before OCR is abandoned           |
 | `CONVERT_IDLE_RELEASE_MS`  | unset       | Release the warm pipeline after idle time |
+| `CONVERT_HEARTBEAT_MS`     | `15000`     | Keep-alive byte interval; `0` disables   |
+
+## Running behind a reverse proxy
+
+Two proxy defaults break document ingestion, and both fail as something else.
+
+**Idle timeouts.** A 238-page book takes minutes; nginx's `proxy_read_timeout`,
+most cloud load balancers and Cloudflare cut the connection at 60–100 s. The
+caller then sees a network error that says nothing about the document.
+
+The service defends itself: during a conversion it writes a single space every
+`CONVERT_HEARTBEAT_MS`, and proxies reset their read timer on any upstream byte.
+JSON ignores leading whitespace, so a client calling `response.json()` needs no
+knowledge of it. The trade: the first heartbeat commits the status to `200`, so
+an error after that point arrives as `200` with `deferredStatus` in the body
+carrying the code it would have been. Errors before the first interval — nearly
+all of them, since bad input is rejected in milliseconds — are unaffected.
+
+**Body size.** nginx's `client_max_body_size` defaults to **1 MB**, so almost
+every real document is rejected with a 413 before the service sees it. Raise it
+to at least the vault's 30 MB cap.
+
+`deploy/nginx.conf` is a working reference with both settings, the equivalents
+for Envoy, HAProxy, ALB, GCP LB, Traefik and ingress-nginx, and a note on why a
+partial TLS chain surfaces as `ok: false` rather than a certificate error.
 
 ## Development
 
