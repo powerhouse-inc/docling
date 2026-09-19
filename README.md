@@ -78,6 +78,27 @@ working service with a pending download. The vault surfaces both.
 | `CONVERT_IDLE_RELEASE_MS`  | unset       | Release the warm pipeline after idle time |
 | `CONVERT_HEARTBEAT_MS`     | `15000`     | Keep-alive byte interval; `0` disables   |
 
+## Sizing
+
+Measured on a 238-page, 16.6 MB book (`quality.coverage 0.955`, 972 chunks):
+
+| | |
+| --- | --- |
+| Idle, no conversion yet | **52 MB** |
+| Warm models, small PDF | **1.13 GB** |
+| Peak during the book | **9.6 GB** |
+| Wall clock | **334 s** (155 s converting + 178 s chunking) |
+
+The 1.13 GB figure quoted elsewhere is the *idle* cost of keeping models
+resident. The working set for a large document is several times that, and it
+scales with the document rather than with traffic. **A 2 GB container limit
+OOMs mid-book, and the failure looks like a dropped connection** — set the limit
+around 12 GB with a much smaller request.
+
+Concurrency does not multiply it: one instance serialises PDF conversions
+because the models are mutable sessions, so throughput comes from replicas, and
+each replica needs its own headroom.
+
 ## Running behind a reverse proxy
 
 Two proxy defaults break document ingestion, and both fail as something else.

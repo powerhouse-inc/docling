@@ -29,6 +29,13 @@ where it is enforced, which is why every error path already works with it.
 `linux-x64-gnu`, `linux-arm64-gnu` and `win32-x64-msvc` — no musl build — and
 the Switchboard image is alpine. That is why this repository exists.
 
+## Sizing, measured
+
+A 238-page book peaks at **9.6 GB** resident and takes **334 s**. The ~1.36 GB
+figure in the source comments is the idle cost of warm models, not the working
+set — do not quote it as a container limit. Anything under ~12 GB risks an OOM
+that presents as a dropped connection rather than an error.
+
 ## Layout
 
 ```
