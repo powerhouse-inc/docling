@@ -24,9 +24,14 @@ FROM node:24-trixie-slim AS docling
 # Rung 2 (Tesseract via ocrmypdf) and the PDF repair tools qpdf/ghostscript,
 # which rescue PDFs that pdfium refuses. Poppler arrives with ocrmypdf; add more
 # tesseract-ocr-<lang> packages for other languages.
+#
+# `curl` is not optional: docling's own download_dependencies.sh checks for it
+# and exits 1 with "error: curl is required", so without it `npm run fetch-models`
+# fails and the service is stuck at ready:false — able to convert docx/html/md
+# but never a PDF. `tar` and `gzip` the same script needs are already in the base.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       ocrmypdf tesseract-ocr tesseract-ocr-eng ghostscript qpdf ca-certificates \
+       ocrmypdf tesseract-ocr tesseract-ocr-eng ghostscript qpdf ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
