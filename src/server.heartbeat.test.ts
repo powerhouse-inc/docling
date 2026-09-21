@@ -90,9 +90,11 @@ async function slowConvert(filename: string) {
     {
       method: "POST",
       body: trickle(["# Title\n", "\n", "Body text.\n"], 60),
-      // Required by undici whenever the body is a stream.
+      // Required by undici whenever the body is a stream. @types/node >= 24
+      // declares `duplex` on RequestInit, so the intersection cast that used
+      // to be needed here is now flagged as an unnecessary assertion.
       duplex: "half",
-    } as RequestInit & { duplex: "half" },
+    },
   );
   return { res, text: await res.text() };
 }
