@@ -44,6 +44,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # `secrets` is NOT an available context in a step-level `if:`. Referencing it
+    # there is a workflow *validation* error, so GitHub fails the run before it
+    # starts a single job — the run shows conclusion=failure with total_count: 0
+    # and no check runs, which is what happened on 2026-09-19. Hoisting the
+    # secrets into the job env and testing `env.` is the supported way to keep
+    # the Harbor push optional for forks that have no credentials.
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,9 +67,17 @@ jobs:
           GHCR_BASE="${{ env.GHCR_REGISTRY }}/${{ github.repository_owner }}/${PROJECT}/docling"
           HARBOR_BASE="${{ env.DOCKER_REGISTRY }}/${PROJECT}/docling"
 
-          TAGS="${GHCR_BASE}:v${VERSION},${HARBOR_BASE}:v${VERSION}"
-          TAGS="${TAGS},${GHCR_BASE}:${CHANNEL},${HARBOR_BASE}:${CHANNEL}"
-          TAGS="${TAGS},${GHCR_BASE}:${GITHUB_SHA::7},${HARBOR_BASE}:${GITHUB_SHA::7}"
+          # Harbor tags are added only when Harbor credentials exist. The login
+          # step below is already optional, so emitting Harbor tags
+          # unconditionally made `build-push` fail on an unauthenticated push
+          # for any fork without DOCKER_USERNAME -- the optionality has to cover
+          # the tag list too, not just the login.
+          TAGS="${GHCR_BASE}:v${VERSION},${GHCR_BASE}:${CHANNEL},${GHCR_BASE}:${GITHUB_SHA::7}"
+          if [ -n "$DOCKER_USERNAME" ]; then
+            TAGS="${TAGS},${HARBOR_BASE}:v${VERSION},${HARBOR_BASE}:${CHANNEL},${HARBOR_BASE}:${GITHUB_SHA::7}"
+          else
+            echo "::notice::Harbor credentials absent - publishing to GHCR only"
+          fi
 
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
           echo "project=$PROJECT" >> $GITHUB_OUTPUT
@@ -69,17 +86,17 @@ jobs:
       # Harbor rejects a push to a project that does not exist yet, so create it
       # on first publish. Idempotent: an existing project is left alone.
       - name: Ensure Harbor project exists
-        if: ${{ secrets.DOCKER_USERNAME != '' }}
+        if: env.DOCKER_USERNAME != ''
         run: |
           PROJECT="${{ steps.meta.outputs.project }}"
-          EXISTS=$(curl -s -u "${{ secrets.DOCKER_USERNAME }}:${{ secrets.DOCKER_PASSWORD }}" \
+          EXISTS=$(curl -s -u "$DOCKER_USERNAME:$DOCKER_PASSWORD" \
             "https://${{ env.DOCKER_REGISTRY }}/api/v2.0/projects?name=${PROJECT}" \
             | jq -r ".[]? | select(.name==\"${PROJECT}\") | .name")
           if [ "$EXISTS" = "$PROJECT" ]; then
             echo "Project ${PROJECT} already exists"
           else
             curl -fsS -X POST \
-              -u "${{ secrets.DOCKER_USERNAME }}:${{ secrets.DOCKER_PASSWORD }}" \
+              -u "$DOCKER_USERNAME:$DOCKER_PASSWORD" \
               -H "Content-Type: application/json" \
               -d "{\"project_name\": \"${PROJECT}\", \"public\": false}" \
               "https://${{ env.DOCKER_REGISTRY }}/api/v2.0/projects"
@@ -94,11 +111,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/login-action@v3
-        if: ${{ secrets.DOCKER_USERNAME != '' }}
+        if: env.DOCKER_USERNAME != ''
         with:
           registry: ${{ env.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
