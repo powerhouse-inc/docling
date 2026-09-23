@@ -77,10 +77,14 @@ async function fetchScript() {
 
   const expected = process.env.DOCLING_DOWNLOAD_SCRIPT_SHA256;
   if (expected && expected !== sha256) {
-    throw new Error(`download script sha256 mismatch\n  expected ${expected}\n  actual   ${sha256}`);
+    throw new Error(
+      `download script sha256 mismatch\n  expected ${expected}\n  actual   ${sha256}`,
+    );
   }
   if (!expected) {
-    console.log("                  (set DOCLING_DOWNLOAD_SCRIPT_SHA256 to pin this)");
+    console.log(
+      "                  (set DOCLING_DOWNLOAD_SCRIPT_SHA256 to pin this)",
+    );
   }
 
   return { dir, path };
@@ -91,11 +95,15 @@ async function main() {
 
   const script = await fetchScript();
   try {
-    console.log(`\n→ running: sh download_dependencies.sh ${SCRIPT_ARGS.join(" ")}\n`);
+    console.log(
+      `\n→ running: sh download_dependencies.sh ${SCRIPT_ARGS.join(" ")}\n`,
+    );
     await run("sh", [script.path, ...SCRIPT_ARGS], { cwd: home });
   } finally {
     await rm(script.dir, { recursive: true, force: true });
   }
+
+  await fetchFormulaModel();
 
   // Verify with the binding itself rather than trusting the script's exit code.
   const { checkDependencies } = await import("docling.rs");
@@ -112,6 +120,51 @@ async function main() {
     console.error("\nModels are still incomplete — see `missing` above.");
     process.exitCode = 1;
   }
+}
+
+/**
+ * The formula decoder's model (see formula-decoder.mjs). Separate from the
+ * docling.rs download above because it is ours, not theirs: docling.rs has no
+ * formula model to fetch.
+ *
+ * ~112 MiB (83 encoder + 29 decoder). Idempotent like the rest of this script —
+ * already-present files are skipped — so re-running on every pod start is
+ * correct and self-healing. A failure here is logged and tolerated: the service
+ * still converts, formulas just keep the `formula-not-decoded` placeholder.
+ */
+async function fetchFormulaModel() {
+  const { FORMULA_MODEL_ID, FORMULA_MODEL_FILES } =
+    await import("./formula-decoder.mjs");
+  const { mkdir, access, writeFile } = await import("node:fs/promises");
+  const dir = join(home, "formula", FORMULA_MODEL_ID);
+  const base = `https://huggingface.co/${FORMULA_MODEL_ID}/resolve/main`;
+
+  console.log(`\nfetching formula model ${FORMULA_MODEL_ID}`);
+  for (const file of FORMULA_MODEL_FILES) {
+    const target = join(dir, file);
+    try {
+      await access(target);
+      continue; // already there
+    } catch {
+      // not there — fetch it
+    }
+    // The .onnx live under onnx/ locally (transformers.js's expected tree) but
+    // at the repo ROOT upstream, so strip the prefix when building the URL.
+    const remote = `${base}/${file.replace(/^onnx\//, "")}`;
+    try {
+      await mkdir(dirname(target), { recursive: true });
+      const res = await fetch(remote);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await writeFile(target, Buffer.from(await res.arrayBuffer()));
+      console.log(`  > ${file}`);
+    } catch (error) {
+      console.error(
+        `  ! ${file} failed (${error.message}) — formulas will not be decoded`,
+      );
+      return;
+    }
+  }
+  console.log("  formula model ready");
 }
 
 await main();

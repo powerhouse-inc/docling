@@ -3,13 +3,10 @@
   "version": "0.1.0",
   "description": "Document-conversion HTTP service over docling.rs. Deployed as its own container and reached over CONVERT_SERVICE_URL.",
   "license": "AGPL-3.0-only",
-  "type": "module",
-  "engines": {
-    "node": ">=24"
-  },
   "files": [
     "src"
   ],
+  "type": "module",
   "scripts": {
     "start": "node src/server.ts",
     "fetch-models": "node src/fetch-models.mjs",
@@ -24,11 +21,9 @@
     "docker:run": "docker run --rm -p 5011:5011 -v docling-models:/models -e DOCLING_RS_HOME=/models docling-service"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
+    "onnxruntime-node": "^1.30.0",
     "pdfjs-dist": "^6.3.289"
-  },
-  "optionalDependencies": {
-    "docling.rs": "^1.55.0",
-    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@types/node": "^24.9.2",
@@ -38,5 +33,12 @@
     "oxlint-tsgolint": "^7.0.2002",
     "typescript": "^5.9.3",
     "vitest": "4.1.1"
+  },
+  "optionalDependencies": {
+    "docling.rs": "^1.55.0",
+    "sharp": "^0.35.4"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }
