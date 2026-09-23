@@ -24,11 +24,14 @@ describe("formulaDecodingEnabled", () => {
 });
 
 describe("formulaTimeoutMs", () => {
-  it("defaults to 15s and ignores nonsense", () => {
-    expect(formulaTimeoutMs({})).toBe(15000);
+  it("defaults to 60s and ignores nonsense", () => {
+    // 60s, not 15s: measured on the Robot node the same formulas take 6.6s,
+    // 9.8s and 24s. The original 15s was a laptop number and silently dropped
+    // the longest formula of a three-formula document.
+    expect(formulaTimeoutMs({})).toBe(60000);
     expect(formulaTimeoutMs({ CONVERT_FORMULA_TIMEOUT_MS: "500" })).toBe(500);
     for (const bad of ["", "abc", "0", "-5"]) {
-      expect(formulaTimeoutMs({ CONVERT_FORMULA_TIMEOUT_MS: bad })).toBe(15000);
+      expect(formulaTimeoutMs({ CONVERT_FORMULA_TIMEOUT_MS: bad })).toBe(60000);
     }
   });
 });

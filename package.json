@@ -1,6 +1,6 @@
 {
   "name": "@powerhousedao/docling-service",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Document-conversion HTTP service over docling.rs. Deployed as its own container and reached over CONVERT_SERVICE_URL.",
   "license": "AGPL-3.0-only",
   "files": [

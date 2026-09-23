@@ -52,10 +52,19 @@ export function formulaDecodingEnabled(env = process.env) {
   return env.CONVERT_DECODE_FORMULAS !== "0";
 }
 
-/** Per-formula ceiling. Bounds ONE formula so a pathological crop cannot hang a whole conversion; it is not a cap on how many are decoded. */
+/**
+ * Per-formula ceiling. Bounds ONE formula so a pathological crop cannot hang a
+ * whole conversion; it is not a cap on how many are decoded.
+ *
+ * 60s, not the 15s this shipped with. That first figure came from a laptop
+ * (0.5-0.9s per formula) and was wrong for the hardware this actually runs on:
+ * measured on the Robot node (EPYC 7401P, Zen 1) the same formulas take
+ * 6.6s, 9.8s and 24s. A 15s ceiling silently discarded the longest formula of
+ * a three-formula document.
+ */
 export function formulaTimeoutMs(env = process.env) {
-  const n = Number(env.CONVERT_FORMULA_TIMEOUT_MS ?? 15000);
-  return Number.isFinite(n) && n > 0 ? n : 15000;
+  const n = Number(env.CONVERT_FORMULA_TIMEOUT_MS ?? 60000);
+  return Number.isFinite(n) && n > 0 ? n : 60000;
 }
 
 /** Root of the model tree: `<DOCLING_RS_HOME>/formula/<repo id>`. */
@@ -175,6 +184,32 @@ function warnOnce(error) {
 }
 
 /**
+ * Crop the blank margins off before the model sees the image.
+ *
+ * This is not cosmetic. figures.mjs cuts a formula as a full-width band of the
+ * page, so a formula that occupies half the line arrives as (say) 991x79 with
+ * the right half blank. The processor then squares that to the model's fixed
+ * input and the formula shrinks into illegibility. Measured on the Bitcoin
+ * whitepaper's piecewise Poisson formula:
+ *
+ *   untrimmed 991x79 -> \sum_{k=0}^{x} ... e^{-t} ... \left| q^{k}\,p \right|   (wrong)
+ *   trimmed   333x73 -> \sum_{k=0}^{\infty} ... e^{-\lambda} ... \left\{        (right)
+ *
+ * sharp is optional in this image (see `capabilities()`), so a failure here
+ * returns the original bytes and decoding proceeds — worse odds, not an error.
+ * @param {Buffer} png
+ * @returns {Promise<Buffer>}
+ */
+async function trimWhitespace(png) {
+  try {
+    const sharp = (await import("sharp")).default;
+    return await sharp(png).trim().png().toBuffer();
+  } catch {
+    return png;
+  }
+}
+
+/**
  * Decode one cropped formula PNG.
  *
  * Returns null for every failure — missing model, load error, timeout, empty
@@ -205,7 +240,9 @@ export async function decodeFormula(png, options = {}) {
     }
     const s = await load(dir);
     const { RawImage } = await import("@huggingface/transformers");
-    const image = await RawImage.fromBlob(new Blob([new Uint8Array(png)]));
+    const image = await RawImage.fromBlob(
+      new Blob([new Uint8Array(await trimWhitespace(png))]),
+    );
     const { pixel_values } = await s.processor(image);
     const { last_hidden_state } = await s.encoder.run({
       pixel_values: new s.ort.Tensor(
