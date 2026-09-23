@@ -79,12 +79,20 @@ import {
   altFor,
   applyBudget,
   DEFAULT_MAX_FIGURE_BYTES,
+  FORMULA_PLACEHOLDER,
   formulaRegions,
   interiorRows,
   pictureFigures,
+  replacePlaceholder,
   toPixels,
   type Figure,
 } from "./figures.mjs";
+import {
+  decodeFormula,
+  formulaDecodingEnabled,
+  formulaTimeoutMs,
+  missingFormulaFiles,
+} from "./formula-decoder.mjs";
 
 const PORT = Number(
   process.env.CONVERT_SERVICE_PORT ?? process.env.PORT ?? 5007,
@@ -1178,8 +1186,7 @@ async function handleConvert(
       error: `cannot convert ${format} without the docling models`,
       missing: dependencies.missing,
       modelsDir: dependencies.home,
-      hintForOperators:
-        "npm run fetch-models — downloads ~700 MB, once",
+      hintForOperators: "npm run fetch-models — downloads ~700 MB, once",
     });
     return;
   }
@@ -1405,7 +1412,12 @@ async function handleConvert(
     // to put them in.
     let figures: Figure[] = [];
     let figureStats: FigureStats | null = null;
-    if (wantFigures && isPdf) {
+    // Formula decoding needs the same crops the figure pass produces, so the
+    // pass runs when EITHER the caller asked for figures or we are decoding.
+    // When only decoding, the images are dropped from the response below, so
+    // `figures=0` keeps returning no image payload exactly as before.
+    const decodingFormulas = formulaDecodingEnabled();
+    if ((wantFigures || decodingFormulas) && isPdf) {
       hooks.onPhase?.("figures");
       if (job) {
         job.pagesDone = 0;
@@ -1455,10 +1467,44 @@ async function handleConvert(
             unplaced: placed.unplaced.length,
           };
         }
+        // Swap each decoded formula's `<!-- formula-not-decoded -->` for its
+        // LaTeX. `replacePlaceholder` targets the n-th placeholder, which is
+        // exactly what `placeholderIndex` counts, so this survives a document
+        // with a mix of decoded and undecoded formulas.
+        if (decodingFormulas) {
+          const timeoutMs = formulaTimeoutMs();
+          let markdown = result.markdown;
+          let decoded = 0;
+          for (const figure of figures) {
+            if (figure.kind !== "formula") continue;
+            const latex = await decodeFormula(
+              Buffer.from(figure.bytesBase64, "base64"),
+              { timeoutMs },
+            );
+            if (!latex) continue; // keep the placeholder
+            markdown = replacePlaceholder(
+              markdown,
+              FORMULA_PLACEHOLDER,
+              figure.placeholderIndex,
+              `$$${latex}$$`,
+            );
+            decoded++;
+          }
+          // Re-chunk only if something actually changed: the chunks are cut
+          // from the markdown, so stale chunks would still say "not decoded".
+          if (decoded > 0)
+            result = await conversionFromText(markdown, dir, filename);
+        }
       } catch (error) {
         console.warn(
           `[convert] figures failed for ${filename}: ${error instanceof Error ? error.message : String(error)}`,
         );
+      }
+      // The caller only asked for decoding, not for pictures: give back the
+      // stats but not the base64, so the response shape matches `figures=0`.
+      if (!wantFigures) {
+        figures = [];
+        figureStats = null;
       }
     }
 
@@ -1520,6 +1566,13 @@ async function handleHealth(res: ServerResponse): Promise<void> {
             ? "docling"
             : null,
       autoOcrBudgetSeconds: AUTO_OCR_BUDGET_SECONDS,
+      // Formula decoding is its own readiness: the docling.rs models can be
+      // complete while ours are not, and the failure is silent otherwise —
+      // formulas simply stay undecoded with nothing to say why.
+      formulaDecoding: {
+        enabled: formulaDecodingEnabled(),
+        missing: await missingFormulaFiles(),
+      },
     });
   } catch (error) {
     sendJson(res, 503, {
