@@ -184,6 +184,25 @@ function warnOnce(error) {
 }
 
 /**
+ * The order formula replacements must be applied in: HIGHEST placeholder index
+ * first.
+ *
+ * `replacePlaceholder` finds the n-th REMAINING occurrence, so replacing one
+ * shifts every later placeholder down by one. Ascending order therefore
+ * corrupts the mapping after the first substitution — measured on a
+ * three-formula document, one formula decoded fine and then landed nowhere.
+ * Descending order is safe because replacing a later placeholder cannot move an
+ * earlier one.
+ *
+ * @template {{ placeholderIndex: number }} T
+ * @param {T[]} figures
+ * @returns {T[]}
+ */
+export function replacementOrder(figures) {
+  return [...figures].sort((a, b) => b.placeholderIndex - a.placeholderIndex);
+}
+
+/**
  * Crop the blank margins off before the model sees the image.
  *
  * This is not cosmetic. figures.mjs cuts a formula as a full-width band of the

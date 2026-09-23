@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   argmaxLast,
   decodeFormula,
+  replacementOrder,
   resetFormulaDecoder,
   formulaDecodingEnabled,
   formulaModelDir,
@@ -113,5 +114,26 @@ describe("decodeFormula failure paths", () => {
     await expect(
       decodeFormula(Buffer.from("x"), { dir: "/nonexistent-c" }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("replacementOrder", () => {
+  // replacePlaceholder finds the n-th REMAINING occurrence, so each
+  // substitution shifts every later placeholder down by one. Replacing in
+  // ascending order silently mis-targets everything after the first -- on a
+  // three-formula document that showed up as a formula decoding correctly and
+  // then landing nowhere.
+  it("returns figures highest placeholder index first", () => {
+    const figures = [
+      { placeholderIndex: 0, id: "a" },
+      { placeholderIndex: 2, id: "c" },
+      { placeholderIndex: 1, id: "b" },
+    ];
+    expect(replacementOrder(figures).map((f) => f.id)).toEqual(["c", "b", "a"]);
+  });
+  it("does not mutate its input", () => {
+    const figures = [{ placeholderIndex: 0 }, { placeholderIndex: 1 }];
+    replacementOrder(figures);
+    expect(figures.map((f) => f.placeholderIndex)).toEqual([0, 1]);
   });
 });

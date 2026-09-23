@@ -92,6 +92,7 @@ import {
   formulaDecodingEnabled,
   formulaTimeoutMs,
   missingFormulaFiles,
+  replacementOrder,
 } from "./formula-decoder.mjs";
 
 const PORT = Number(
@@ -1475,7 +1476,10 @@ async function handleConvert(
           const timeoutMs = formulaTimeoutMs();
           let markdown = result.markdown;
           let decoded = 0;
-          for (const figure of figures) {
+          // Highest placeholder index first: replacePlaceholder targets the
+          // n-th REMAINING occurrence, so replacing one shifts every later
+          // placeholder down by one and ascending order loses the mapping.
+          for (const figure of replacementOrder(figures)) {
             if (figure.kind !== "formula") continue;
             const latex = await decodeFormula(
               Buffer.from(figure.bytesBase64, "base64"),

@@ -16,3 +16,6 @@ export function decodeFormula(
   png: Buffer,
   options?: { dir?: string; timeoutMs?: number; maxTokens?: number },
 ): Promise<string | null>;
+export function replacementOrder<T extends { placeholderIndex: number }>(
+  figures: T[],
+): T[];
