@@ -29,9 +29,19 @@ FROM node:24-trixie-slim AS docling
 # and exits 1 with "error: curl is required", so without it `npm run fetch-models`
 # fails and the service is stuck at ready:false — able to convert docx/html/md
 # but never a PDF. `tar` and `gzip` the same script needs are already in the base.
+# Build for transcription as well as documents: adds ffmpeg and the Whisper
+# weights. Off by default so a document converter stays small.
+ARG WITH_ASR=0
+ENV CONVERT_FETCH_ASR=$WITH_ASR
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        ocrmypdf tesseract-ocr tesseract-ocr-eng ghostscript qpdf ca-certificates curl \
+  # ffmpeg only when the image is built for transcription: it is tens of
+  # megabytes that a document converter never executes.
+  && if [ "$WITH_ASR" = "1" ]; then \
+       apt-get install -y --no-install-recommends ffmpeg; \
+     fi \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

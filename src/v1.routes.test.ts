@@ -308,6 +308,21 @@ describe("docling options reach the binding", () => {
   });
 });
 
+describe("transcription readiness", () => {
+  // The service installs nothing: /health says whether this deployment can
+  // read audio at all, so a workflow gets a straight answer instead of a
+  // conversion that fails deep inside the binding.
+  it("reports whether audio and video can be read", async () => {
+    const res = await fetch(`${BASE}/health`);
+    const body = (await res.json()) as {
+      capabilities?: Record<string, unknown>;
+    };
+    expect(body.capabilities).toBeDefined();
+    expect(typeof body.capabilities?.asr).toBe("boolean");
+    expect(typeof body.capabilities?.ffmpeg).toBe("boolean");
+  });
+});
+
 describe("the existing routes are untouched", () => {
   it("still converts through POST /convert", async () => {
     const res = await fetch(`${BASE}/convert?filename=note.md`, {

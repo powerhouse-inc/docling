@@ -40,7 +40,17 @@ From the v1 side: `force_ocr`, `do_ocr` (false → `skipOcr`), `ocr_lang`, `page
 
 Two behaviours worth knowing. **A request carrying conversion options does not use the warm pipeline**, which ignores per-call options — it costs model reuse to be obeyed. And **chunks are then cut from the same converted document** rather than a fresh default conversion, because `chunkFileAsync` re-converts with defaults and would otherwise chunk a different document from the one the markdown came from; that is the JSON-chunking path, slightly less faithful on table cells, which is the better of the two errors.
 
-ASR options are accepted but the models are not fetched by default (`--no-asr`); a build that wants them has to fetch them and have `ffmpeg` present.
+### Transcription
+
+Audio and video are read with Whisper, and are **opt-in on both sides** — a service converting invoices should not carry the weights, and the tenants running this for documents are sized for documents.
+
+- **Build:** `docker build --build-arg WITH_ASR=1` installs `ffmpeg` and fetches the Whisper weights. Without it neither is present and the image stays as small as it is today.
+- **Fetch alone:** `CONVERT_FETCH_ASR=1 npm run fetch-models` gets the weights for a local run; `ffmpeg` still has to be on PATH.
+- **Model:** a request names one with `asrModel` (and `asrLang`, and `videoFrames` for video); `CONVERT_ASR_MODEL` sets the default for requests that do not.
+
+`GET /health` reports `capabilities.ffmpeg` and `capabilities.asr` (both present), so a caller can ask whether this deployment can read audio at all rather than discovering it inside a failed conversion.
+
+Transcription options are applied only to audio and video. A PDF handed an `asrModel` is unaffected.
 
 `/convert`, `/health` and `/progress/:job` are unchanged — the v1 routes translate onto them rather than reimplementing anything, so the OCR ladder, the normalising retries, figures and the extraction score all still apply.
 
