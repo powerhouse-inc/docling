@@ -310,7 +310,7 @@ import {
   doclingOptionsFromQuery,
   doclingOptionsFromV1,
 } from "./convert-options.mjs";
-import { asrArgsFor, MEDIA_EXTENSIONS } from "./media.mjs";
+import { asrArgsFor } from "./media.mjs";
 import { createTaskRegistry, toTaskStatusResponse } from "./tasks.mjs";
 import {
   parseSourceRequest,
@@ -1781,6 +1781,11 @@ async function runV1Conversion(
   const query = new URLSearchParams({ filename: source.filename });
   for (const [name, value] of Object.entries(mapped.convert)) {
     query.set(name, String(value));
+  }
+  // …and the service's own query parameters, which are not binding options:
+  // `figures=1` is the pass that renders the pictures out of the pages.
+  for (const [name, value] of Object.entries(mapped.service)) {
+    query.set(name, value);
   }
 
   const inner = Readable.from([bytes]) as unknown as IncomingMessage;

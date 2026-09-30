@@ -12,16 +12,18 @@
  *
  * What does not translate, and is not pretended away:
  *
- * - **Most conversion options.** Upstream exposes some forty; this service
- *   decides OCR from the file itself and has no table mode, page range, PDF
- *   backend or enrichment flags. An option it cannot honour is reported in
- *   `errors[]` and drops the status to `partial_success` rather than being
- *   accepted in silence — a workflow that sets `table_mode`, sees success and
- *   never learns it did nothing is the failure worth designing out.
- * - **The async job routes.** `/v1/status/poll` and `/v1/result` need a store
- *   of finished conversions; `POST /convert` here holds the connection and
- *   `/progress/:id` only watches a conversion already running.
+ * - **A handful of conversion options.** Most of upstream's surface now maps
+ *   onto the binding (see convert-options.mjs); the few with no equivalent —
+ *   `table_mode`, `pdf_backend`, `document_timeout` — are reported in
+ *   `errors[]` and drop the status to `partial_success` rather than being
+ *   accepted in silence. A workflow that sets one, sees success and never
+ *   learns it did nothing is the failure worth designing out.
+ * - **Batching.** Upstream takes up to three sources per request; this service
+ *   converts one document at a time and says so rather than dropping the rest.
  * - **Chunking as its own call.** Chunks come back with every conversion.
+ *
+ * What travels the other way is `powerhouse`: the measurements this service
+ * makes that upstream's response shape has no field for. See `measurementsOf`.
  */
 
 /**
@@ -122,7 +124,62 @@ export function wantsJson(options) {
  * @property {string} [format]
  * @property {string} [inputName]
  * @property {{ convertMs: number, chunkMs: number }} [timings]
+ * @property {string} [backend]
+ * @property {string} [textSource]
+ * @property {boolean} [needsOcr]
+ * @property {number | null} [pages]
+ * @property {unknown} [quality]
+ * @property {unknown} [ocrOffer]
+ * @property {unknown[]} [figures]
+ * @property {unknown} [figureStats]
+ * @property {unknown} [normalised]
+ * @property {unknown} [ocr]
  */
+
+/**
+ * What this service measures that docling-serve's response shape has no field
+ * for: how much of the document's own text survived (`quality`), where that
+ * text came from (`textSource`), whether a scan is worth offering OCR for
+ * (`ocrOffer`), and the figures it cut out of the pages (`figures`).
+ *
+ * It travels under a key of our own rather than being forced into upstream's
+ * fields. A client written against docling-serve ignores an unknown key, so
+ * the response stays a valid `ConvertDocumentResponse`; a client that knows
+ * this service reads the block when it is there and coerces nothing when it is
+ * not — which is also what it gets when it is pointed at a real docling-serve.
+ */
+const MEASURED = [
+  "backend",
+  "textSource",
+  "needsOcr",
+  "pages",
+  "quality",
+  "ocrOffer",
+  "figures",
+  "figureStats",
+  "normalised",
+  "ocr",
+];
+
+/**
+ * The measured fields a conversion actually carries. Absent and null are the
+ * same answer — "not measured" — and both are left out, so a reader never has
+ * to tell `quality: null` apart from no quality at all.
+ * @param {Conversion} conversion
+ * @returns {Record<string, unknown> | undefined}
+ */
+function measurementsOf(conversion) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const name of MEASURED) {
+    const value = /** @type {Record<string, unknown>} */ (conversion)[name];
+    if (value === undefined || value === null) continue;
+    // An empty figure list is "no figures", not a measurement worth carrying.
+    if (Array.isArray(value) && value.length === 0) continue;
+    out[name] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /**
  * Shape a conversion as docling-serve's `ConvertDocumentResponse`.
@@ -154,5 +211,6 @@ export function toConvertDocumentResponse(conversion, opts) {
       error_message: w.detail,
     })),
     processing_time: (convertMs + chunkMs) / 1000,
+    powerhouse: measurementsOf(conversion),
   };
 }
