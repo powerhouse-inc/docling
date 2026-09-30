@@ -60,6 +60,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import { cpus, tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import { Readable } from "node:stream";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Chunk, Pipeline } from "docling.rs";
@@ -301,6 +303,21 @@ function startHeartbeat(res: ServerResponse, intervalMs: number) {
 }
 
 /** Read the raw request body, refusing anything over `MAX_BYTES`. */
+// The docling-serve v1 surface lives in v1.mjs: parsing, option warnings and
+// the ConvertDocumentResponse mapping, pure and tested apart from the server.
+import {
+  parseSourceRequest,
+  toConvertDocumentResponse,
+  unsupportedOptionWarnings,
+  wantsJson,
+  wantsOcr,
+} from "./v1.mjs";
+
+/** This service's own version, reported at /version for v1 clients. */
+const VERSION: string = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const parts: Buffer[] = [];
@@ -1592,6 +1609,150 @@ async function handleHealth(res: ServerResponse): Promise<void> {
 
 // --- server -----------------------------------------------------------------
 
+// --- docling-serve v1 compatibility -----------------------------------------
+//
+// `POST /v1/convert/source` is the shape @powerhousedao/piece-docling speaks.
+// Rather than reimplement the conversion, it is translated onto `/convert` and
+// the answer translated back: the routing ladder, the normalising retries,
+// figures and the extraction score all stay in one place, and the existing
+// route is untouched.
+//
+// The delegation is a synthetic request plus a recorder standing in for the
+// response. That works because every exit in handleConvert funnels through
+// `sendJson`, so the recorder sees the 415s and 503s as well as the success.
+
+interface RecordedResponse {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+function responseRecorder(): {
+  res: ServerResponse;
+  recorded: () => RecordedResponse;
+} {
+  let status = 200;
+  let payload = "";
+  const stub = {
+    headersSent: false,
+    setHeader() {},
+    writeHead(code: number) {
+      status = code;
+      return stub;
+    },
+    write(chunk: string) {
+      payload += chunk;
+      return true;
+    },
+    end(chunk?: string) {
+      if (typeof chunk === "string") payload += chunk;
+      return stub;
+    },
+  };
+  return {
+    res: stub as unknown as ServerResponse,
+    recorded: () => {
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(payload || "{}") as Record<string, unknown>;
+      } catch {
+        body = { error: payload };
+      }
+      // A heartbeat-deferred error carries its real code in the body.
+      const deferred = body.deferredStatus;
+      return {
+        status: typeof deferred === "number" ? deferred : status,
+        body,
+      };
+    },
+  };
+}
+
+async function handleV1ConvertSource(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse((await readBody(req)).toString("utf8") || "{}") as Record<
+      string,
+      unknown
+    >;
+  } catch (error) {
+    sendJson(res, 400, {
+      error: `body must be JSON: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    return;
+  }
+
+  let source;
+  try {
+    source = parseSourceRequest(body);
+  } catch (error) {
+    sendJson(res, 400, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  const options = (body.options ?? undefined) as
+    | Record<string, unknown>
+    | undefined;
+
+  let bytes: Buffer;
+  if (source.kind === "file") {
+    bytes = source.bytes as Buffer;
+  } else {
+    // docling-serve fetches an http source itself, so this does too — with the
+    // source's own headers, which is what a private link needs.
+    try {
+      const fetched = await fetch(source.url as string, {
+        headers: source.headers ?? {},
+      });
+      if (!fetched.ok) {
+        sendJson(res, 415, {
+          error: `could not fetch ${source.url}: ${fetched.status}`,
+        });
+        return;
+      }
+      bytes = Buffer.from(await fetched.arrayBuffer());
+    } catch (error) {
+      sendJson(res, 415, {
+        error: `could not fetch ${source.url}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+  }
+
+  const query = new URLSearchParams({ filename: source.filename });
+  if (wantsOcr(options)) query.set("ocr", "1");
+
+  const inner = Readable.from([bytes]) as unknown as IncomingMessage;
+  inner.headers = {};
+  const recorder = responseRecorder();
+  await handleConvert(
+    inner,
+    recorder.res,
+    new URL(`http://localhost/convert?${query.toString()}`),
+  );
+
+  const { status, body: out } = recorder.recorded();
+  if (status !== 200) {
+    // The piece maps 4xx/5xx by status, so the code travels unchanged and only
+    // the message is passed along.
+    sendJson(res, status, out);
+    return;
+  }
+
+  sendJson(
+    res,
+    200,
+    toConvertDocumentResponse(
+      out as unknown as Parameters<typeof toConvertDocumentResponse>[0],
+      { json: wantsJson(options), warnings: unsupportedOptionWarnings(options) },
+    ),
+  );
+}
+
 const server = createServer((req, res) => {
   void (async () => {
     const url = new URL(
@@ -1629,6 +1790,25 @@ const server = createServer((req, res) => {
         const heartbeat = startHeartbeat(res, HEARTBEAT_MS);
         try {
           await handleConvert(req, res, url);
+        } finally {
+          heartbeat.stop();
+        }
+        return;
+      }
+      // docling-serve reports its version here; piece-docling's connection
+      // check reads it as the connection's label and fails without it.
+      if (req.method === "GET" && url.pathname === "/version") {
+        sendJson(res, 200, {
+          "docling-serve": VERSION,
+          backend: "docling.rs",
+          compatibility: "v1 convert/source",
+        });
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/convert/source") {
+        const heartbeat = startHeartbeat(res, HEARTBEAT_MS);
+        try {
+          await handleV1ConvertSource(req, res);
         } finally {
           heartbeat.stop();
         }
