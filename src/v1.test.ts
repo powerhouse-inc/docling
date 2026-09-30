@@ -57,6 +57,30 @@ describe("parseSourceRequest", () => {
     ).toThrow(/one source/i);
   });
 
+  // A share link carries its name in a query parameter or not at all —
+  // drive.google.com/uc?id=… is the case that matters. Upstream sniffs the
+  // content type; this service picks the format from the extension, so the
+  // caller is allowed to supply the name the URL does not carry.
+  it("takes an explicit filename on an http source over the URL's", () => {
+    const out = parseSourceRequest({
+      sources: [
+        { kind: "http", url: "https://example.test/a.pdf", filename: "report.docx" },
+      ],
+    });
+    expect(out.filename).toBe("report.docx");
+  });
+
+  it("accepts an http source with no extension when a filename is given", () => {
+    const out = parseSourceRequest({
+      sources: [
+        { kind: "http", url: "https://drive.google.test/uc?id=abc", filename: "notes.pdf" },
+      ],
+    });
+    expect(out.kind).toBe("http");
+    expect(out.filename).toBe("notes.pdf");
+    expect(out.url).toBe("https://drive.google.test/uc?id=abc");
+  });
+
   it("rejects an http source whose URL has no usable filename", () => {
     expect(() =>
       parseSourceRequest({ sources: [{ kind: "http", url: "https://example.test/download" }] }),

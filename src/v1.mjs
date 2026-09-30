@@ -88,10 +88,16 @@ export function parseSourceRequest(body) {
   if (source.kind === "http") {
     const url = String(source.url ?? "").trim();
     if (!url) throw new Error("an http source needs a url");
-    const filename = filenameFromUrl(url);
+    // The caller may name the document itself. A share link often carries its
+    // name in a query parameter or not at all — drive.google.com/uc?id=… is the
+    // case — and this service picks the format from the extension, so without
+    // this such a link is unconvertible. Upstream has no such field; it sniffs
+    // the content type instead, and ignores an unknown key.
+    const given = String(source.filename ?? "").trim();
+    const filename = given || filenameFromUrl(url);
     if (!filename) {
       throw new Error(
-        `could not take a filename from ${url}; the format is read from the extension`,
+        `could not take a filename from ${url}; the format is read from the extension, so pass "filename" on the source`,
       );
     }
     const headers =
