@@ -17,6 +17,9 @@ Powerhouse's workflow piece for docling (`@powerhousedao/piece-docling`) speaks 
 | --- | --- |
 | `GET /version` | Reports this service's version as `docling-serve`; the piece's connection check reads it as the connection label |
 | `POST /v1/convert/source` | `{ sources: [one file or http source], options, target: { kind: "inbody" } }` → `ConvertDocumentResponse` |
+| `POST /v1/convert/source/async` | Same body; returns a `task_id` instead of waiting |
+| `GET /v1/status/poll/{task_id}?wait=n` | `pending` / `started` / `success` / `failure`, long-polling up to `n` seconds (capped at 30) |
+| `GET /v1/result/{task_id}` | The `ConvertDocumentResponse` once the task succeeded |
 
 ### Conversion options
 
@@ -44,7 +47,7 @@ ASR options are accepted but the models are not fetched by default (`--no-asr`);
 What it deliberately does not do:
 
 - **One source per request.** docling-serve batches up to three; this service converts one document at a time.
-- **No async job routes.** `/v1/status/poll` and `/v1/result` need a store of finished conversions; here `POST /convert` holds the connection and `/progress/:job` only watches one already running.
+- **Submitting asynchronously joins a queue.** This service converts one document at a time; a synchronous caller gets `503 CONVERSION_BUSY`, while `/v1/convert/source/async` accepts the work and hands back a task id. The queue waits for any direct `POST /convert` to finish rather than racing it, so the two routes coexist — and a direct call made while a queued conversion runs still gets `503`, which is the same one-at-a-time rule seen from the other side. Finished tasks are kept for a minute, then `404`.
 - **No chunk route.** Chunks come back with every conversion; ask for `to_formats: ["md","json"]` and they arrive as `document.json_content`.
 - **Most conversion options are ignored, and say so.** This service reads OCR, tables and layout from the file itself, so `table_mode`, `page_range`, `pdf_backend`, the enrichment flags and the rest have no equivalent. An option it cannot honour comes back in `errors[]` with `status: "partial_success"` rather than being accepted in silence — only `to_formats`, `do_ocr` and `force_ocr` do anything.
 

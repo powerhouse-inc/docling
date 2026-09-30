@@ -171,6 +171,111 @@ describe("POST /v1/convert/source", () => {
   });
 });
 
+describe("the async job routes", () => {
+  async function submit(body: unknown) {
+    const res = await fetch(`${BASE}/v1/convert/source/async`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: res.status,
+      body: (await res.json()) as Record<string, any>,
+    };
+  }
+
+  it("accepts the work and hands back a task id", async () => {
+    const { status, body } = await submit({
+      sources: [source("# Title\n\nQueued.")],
+      options: { to_formats: ["md"] },
+    });
+
+    expect(status).toBe(200);
+    expect(typeof body.task_id).toBe("string");
+    expect(["pending", "started"]).toContain(body.task_status);
+    expect(typeof body.task_position).toBe("number");
+  });
+
+  it("polls to success and then serves the result", async () => {
+    const { body: submitted } = await submit({
+      sources: [source("# Title\n\nPolled to the end.")],
+      options: { to_formats: ["md"] },
+    });
+    const id = String(submitted.task_id);
+
+    // ?wait long-polls, so one call is normally enough.
+    const poll = await fetch(`${BASE}/v1/status/poll/${id}?wait=30`);
+    const status = (await poll.json()) as Record<string, any>;
+    expect(poll.status).toBe(200);
+    expect(status.task_status).toBe("success");
+
+    const result = await fetch(`${BASE}/v1/result/${id}`);
+    expect(result.status).toBe(200);
+    const doc = (await result.json()) as V1Body;
+    expect(doc.document?.md_content).toContain("Polled to the end.");
+    expect(doc.status).toBe("success");
+  }, 60_000);
+
+  // Submitting is joining a queue rather than being refused, which is the
+  // point of the async route: the synchronous one answers 503 when busy.
+  it("queues several submissions and finishes them all", async () => {
+    const ids = await Promise.all(
+      ["one", "two", "three"].map(async (word) => {
+        const { body } = await submit({
+          sources: [source(`# ${word}\n\nBody ${word}.`)],
+        });
+        return String(body.task_id);
+      }),
+    );
+
+    for (const id of ids) {
+      const poll = await fetch(`${BASE}/v1/status/poll/${id}?wait=30`);
+      const status = (await poll.json()) as Record<string, any>;
+      expect(status.task_status).toBe("success");
+    }
+    expect(new Set(ids).size).toBe(3);
+  }, 90_000);
+
+  it("carries a failure's reason through the poll", async () => {
+    const { body: submitted } = await submit({
+      sources: [{ kind: "file", filename: "a.pdf", base64_string: "" }],
+    });
+    const id = String(submitted.task_id);
+    const poll = await fetch(`${BASE}/v1/status/poll/${id}?wait=30`);
+    const status = (await poll.json()) as Record<string, any>;
+
+    expect(status.task_status).toBe("failure");
+    expect(typeof status.error_message).toBe("string");
+  }, 60_000);
+
+  it("answers an unknown task with 404 on both routes", async () => {
+    expect((await fetch(`${BASE}/v1/status/poll/nope`)).status).toBe(404);
+    expect((await fetch(`${BASE}/v1/result/nope`)).status).toBe(404);
+  });
+
+  // Asking for a result too early is a state answer, not a blank 404 body:
+  // the caller is told to keep polling.
+  it("tells a caller that asks for a result too early to keep polling", async () => {
+    const { body: submitted } = await submit({
+      sources: [source("# slow\n\nx")],
+    });
+    const res = await fetch(`${BASE}/v1/result/${String(submitted.task_id)}`);
+    if (res.status === 404) {
+      const body = (await res.json()) as Record<string, any>;
+      expect(["TASK_NOT_READY", "TASK_NOT_FOUND"]).toContain(body.code);
+    } else {
+      // It finished before we asked, which is also correct.
+      expect(res.status).toBe(200);
+    }
+
+    // Drain before leaving: a queued conversion holds the single worker, and
+    // a direct POST /convert answers 503 while it does. That is the intended
+    // behaviour — one document at a time — so the test must not leave work
+    // running for whatever asserts next.
+    await fetch(`${BASE}/v1/status/poll/${String(submitted.task_id)}?wait=30`);
+  }, 60_000);
+});
+
 describe("docling options reach the binding", () => {
   // Markdown carries no pages or tables to observe an option changing, so
   // what this proves is the plumbing: the binding accepts what the query
