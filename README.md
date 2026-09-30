@@ -18,6 +18,27 @@ Powerhouse's workflow piece for docling (`@powerhousedao/piece-docling`) speaks 
 | `GET /version` | Reports this service's version as `docling-serve`; the piece's connection check reads it as the connection label |
 | `POST /v1/convert/source` | `{ sources: [one file or http source], options, target: { kind: "inbody" } }` → `ConvertDocumentResponse` |
 
+### Conversion options
+
+Everything `docling.rs` accepts is reachable, on `POST /convert` as query parameters and on `/v1/convert/source` through docling-serve's `options` block (whose names are translated onto the binding's):
+
+| Group | Query parameters |
+| --- | --- |
+| OCR | `ocr=1` (force full-page), `skipOcr`, `forceFullPageOcr`, `ocrLang`, `ocrMode`, `ocrScale` |
+| Layout | `headingHierarchy`, `noTextPanels`, `ebcdicLayout`, `pages` |
+| Tables | `compactTables`, `skipEmptyCells` |
+| Enrichment | `doCodeEnrichment`, `doFormulaEnrichment`, `doPictureClassification` |
+| ASR | `asrModel`, `asrLang`, `videoFrames` (needs the ASR models; see below) |
+| VLM | `pipeline`, `vlmEndpoint`, `vlmModel`, `vlmApiKey`, `vlmPrompt`, `vlmMaxTokens` |
+| Output | `to`, `imageMode`, `pageBreakPlaceholder`, `listAttachments`, `fetchImages`, `strict` |
+| Chunker | `chunker`, `tokenizer`, `maxTokens`, `mergePeers` |
+
+From the v1 side: `force_ocr`, `do_ocr` (false → `skipOcr`), `ocr_lang`, `page_range`, `image_export_mode`, `do_code_enrichment`, `do_formula_enrichment`, `do_picture_classification`, `abort_on_error` (→ `strict`) and `pipeline` are translated. Anything else — `table_mode`, `pdf_backend`, `document_timeout` — has no equivalent and is reported in `errors[]` with `status: "partial_success"` rather than accepted in silence.
+
+Two behaviours worth knowing. **A request carrying conversion options does not use the warm pipeline**, which ignores per-call options — it costs model reuse to be obeyed. And **chunks are then cut from the same converted document** rather than a fresh default conversion, because `chunkFileAsync` re-converts with defaults and would otherwise chunk a different document from the one the markdown came from; that is the JSON-chunking path, slightly less faithful on table cells, which is the better of the two errors.
+
+ASR options are accepted but the models are not fetched by default (`--no-asr`); a build that wants them has to fetch them and have `ffmpeg` present.
+
 `/convert`, `/health` and `/progress/:job` are unchanged — the v1 routes translate onto them rather than reimplementing anything, so the OCR ladder, the normalising retries, figures and the extraction score all still apply.
 
 What it deliberately does not do:

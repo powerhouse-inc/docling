@@ -130,8 +130,10 @@ describe("POST /v1/convert/source", () => {
     expect(status).toBe(200);
     expect(body.status).toBe("partial_success");
     const named = JSON.stringify(body.errors);
+    // table_mode has no equivalent in the binding, so it is reported...
     expect(named).toContain("table_mode");
-    expect(named).toContain("page_range");
+    // ...while page_range does (it becomes `pages`), so it is not.
+    expect(named).not.toContain("page_range");
     // The conversion still happened.
     expect(body.document?.md_content).toContain("Hello.");
   }, 60_000);
@@ -166,6 +168,38 @@ describe("POST /v1/convert/source", () => {
       body: "not json",
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("docling options reach the binding", () => {
+  // Markdown carries no pages or tables to observe an option changing, so
+  // what this proves is the plumbing: the binding accepts what the query
+  // parser produced, rather than rejecting an unknown field.
+  it("converts with layout and table options set", async () => {
+    const res = await fetch(
+      `${BASE}/convert?filename=note.md&headingHierarchy=1&compactTables=1&skipEmptyCells=1`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: "# Title\n\nWith options.",
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(String(body.markdown)).toContain("With options.");
+  }, 60_000);
+
+  // A mistyped number is the caller's error and is answered before any
+  // conversion work starts.
+  it("refuses a non-numeric option with a 400 naming it", async () => {
+    const res = await fetch(`${BASE}/convert?filename=note.md&ocrScale=big`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: "# Title",
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(String(body.error)).toContain("ocrScale");
   });
 });
 
