@@ -52,6 +52,7 @@
  * Runs on Node and Bun: `node:http` and `node:child_process` are both
  * implemented by Bun, and Node is what Vetra deploys the vault with.
  */
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import {
@@ -309,6 +310,7 @@ import {
   doclingOptionsFromQuery,
   doclingOptionsFromV1,
 } from "./convert-options.mjs";
+import { createTaskRegistry, toTaskStatusResponse } from "./tasks.mjs";
 import {
   parseSourceRequest,
   toConvertDocumentResponse,
@@ -1702,31 +1704,22 @@ function responseRecorder(): {
   };
 }
 
-async function handleV1ConvertSource(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse((await readBody(req)).toString("utf8") || "{}") as Record<
-      string,
-      unknown
-    >;
-  } catch (error) {
-    sendJson(res, 400, {
-      error: `body must be JSON: ${error instanceof Error ? error.message : String(error)}`,
-    });
-    return;
-  }
-
+/**
+ * The whole of a v1 conversion, from parsed body to the status and body that
+ * should go back. Shared by the synchronous route and the queued one, so the
+ * two cannot drift.
+ */
+async function runV1Conversion(
+  body: Record<string, unknown>,
+): Promise<{ status: number; body: unknown }> {
   let source;
   try {
     source = parseSourceRequest(body);
   } catch (error) {
-    sendJson(res, 400, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return;
+    return {
+      status: 400,
+      body: { error: error instanceof Error ? error.message : String(error) },
+    };
   }
 
   const options = (body.options ?? undefined) as
@@ -1744,17 +1737,19 @@ async function handleV1ConvertSource(
         headers: source.headers ?? {},
       });
       if (!fetched.ok) {
-        sendJson(res, 415, {
-          error: `could not fetch ${source.url}: ${fetched.status}`,
-        });
-        return;
+        return {
+          status: 415,
+          body: { error: `could not fetch ${source.url}: ${fetched.status}` },
+        };
       }
       bytes = Buffer.from(await fetched.arrayBuffer());
     } catch (error) {
-      sendJson(res, 415, {
-        error: `could not fetch ${source.url}: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      return;
+      return {
+        status: 415,
+        body: {
+          error: `could not fetch ${source.url}: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      };
     }
   }
 
@@ -1779,18 +1774,154 @@ async function handleV1ConvertSource(
   if (status !== 200) {
     // The piece maps 4xx/5xx by status, so the code travels unchanged and only
     // the message is passed along.
-    sendJson(res, status, out);
-    return;
+    return { status, body: out };
   }
 
-  sendJson(
-    res,
-    200,
-    toConvertDocumentResponse(
+  return {
+    status: 200,
+    body: toConvertDocumentResponse(
       out as unknown as Parameters<typeof toConvertDocumentResponse>[0],
       { json: wantsJson(options), warnings: mapped.warnings },
     ),
-  );
+  };
+}
+
+/** Read a JSON request body, or answer 400 and return undefined. */
+async function readJsonBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    return JSON.parse(
+      (await readBody(req)).toString("utf8") || "{}",
+    ) as Record<string, unknown>;
+  } catch (error) {
+    sendJson(res, 400, {
+      error: `body must be JSON: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    return undefined;
+  }
+}
+
+async function handleV1ConvertSource(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = await readJsonBody(req, res);
+  if (!body) return;
+  const out = await runV1Conversion(body);
+  sendJson(res, out.status, out.body);
+}
+
+// --- the queue behind the async routes ---------------------------------------
+//
+// Submitting is joining a queue rather than being refused: this service
+// converts one document at a time, and `503 CONVERSION_BUSY` is the
+// synchronous caller's answer to that. The runner waits for any direct
+// /convert to finish rather than racing it, so the two routes coexist.
+
+const tasks = createTaskRegistry();
+const taskQueue: Array<() => Promise<void>> = [];
+let queueRunning = false;
+
+function pumpQueue(): void {
+  if (queueRunning) return;
+  queueRunning = true;
+  void (async () => {
+    try {
+      while (taskQueue.length > 0) {
+        while (busy) await new Promise((r) => setTimeout(r, 250));
+        const job = taskQueue.shift();
+        if (job) await job();
+        tasks.prune();
+      }
+    } finally {
+      queueRunning = false;
+    }
+  })();
+}
+
+async function handleV1ConvertSourceAsync(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = await readJsonBody(req, res);
+  if (!body) return;
+
+  const id = randomUUID();
+  const task = tasks.create(id);
+  taskQueue.push(async () => {
+    tasks.setStarted(id);
+    try {
+      const out = await runV1Conversion(body);
+      if (out.status === 200) tasks.succeed(id, out.body);
+      else tasks.fail(id, { status: out.status, body: out.body });
+    } catch (error) {
+      tasks.fail(id, {
+        status: 500,
+        body: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  });
+  pumpQueue();
+
+  sendJson(res, 200, toTaskStatusResponse(task, tasks.positionOf(id)));
+}
+
+/**
+ * `?wait=n` long-polls: upstream holds the request until the task moves or the
+ * wait is up, which is what keeps a poller from hammering. Capped so a client
+ * cannot pin a connection open indefinitely.
+ */
+async function handleV1StatusPoll(
+  res: ServerResponse,
+  id: string,
+  waitSeconds: number,
+): Promise<void> {
+  const deadline = Date.now() + Math.min(Math.max(waitSeconds, 0), 30) * 1000;
+  for (;;) {
+    const task = tasks.get(id);
+    if (!task) {
+      sendJson(res, 404, {
+        error: "no such task (finished tasks are kept for a minute)",
+        code: "TASK_NOT_FOUND",
+      });
+      return;
+    }
+    const settled = task.status === "success" || task.status === "failure";
+    if (settled || Date.now() >= deadline) {
+      sendJson(res, 200, toTaskStatusResponse(task, tasks.positionOf(id)));
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+function handleV1Result(res: ServerResponse, id: string): void {
+  const task = tasks.get(id);
+  if (!task) {
+    sendJson(res, 404, {
+      error: "no such task (finished tasks are kept for a minute)",
+      code: "TASK_NOT_FOUND",
+    });
+    return;
+  }
+  if (task.status === "failure" && task.error) {
+    sendJson(res, task.error.status, task.error.body);
+    return;
+  }
+  if (task.status !== "success") {
+    // Upstream answers a result asked for too early with the task's state, so
+    // a caller that polls the wrong endpoint still learns what is happening.
+    sendJson(res, 404, {
+      error: `task is ${task.status}; poll /v1/status/poll/${id} until it succeeds`,
+      code: "TASK_NOT_READY",
+    });
+    return;
+  }
+  sendJson(res, 200, task.result);
 }
 
 const server = createServer((req, res) => {
@@ -1843,6 +1974,25 @@ const server = createServer((req, res) => {
           backend: "docling.rs",
           compatibility: "v1 convert/source",
         });
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/convert/source/async") {
+        await handleV1ConvertSourceAsync(req, res);
+        return;
+      }
+      if (req.method === "GET" && url.pathname.startsWith("/v1/status/poll/")) {
+        await handleV1StatusPoll(
+          res,
+          decodeURIComponent(url.pathname.slice("/v1/status/poll/".length)),
+          Number(url.searchParams.get("wait") ?? "0") || 0,
+        );
+        return;
+      }
+      if (req.method === "GET" && url.pathname.startsWith("/v1/result/")) {
+        handleV1Result(
+          res,
+          decodeURIComponent(url.pathname.slice("/v1/result/".length)),
+        );
         return;
       }
       if (req.method === "POST" && url.pathname === "/v1/convert/source") {
