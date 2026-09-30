@@ -310,6 +310,7 @@ import {
   doclingOptionsFromQuery,
   doclingOptionsFromV1,
 } from "./convert-options.mjs";
+import { asrArgsFor, MEDIA_EXTENSIONS } from "./media.mjs";
 import { createTaskRegistry, toTaskStatusResponse } from "./tasks.mjs";
 import {
   parseSourceRequest,
@@ -590,6 +591,9 @@ function probeBinary(
 }
 
 type Capabilities = Omit<OcrCapabilities, "doclingOcr"> & {
+  /** ffmpeg present and the Whisper weights on disk: audio and video can be read. */
+  asr: boolean;
+  ffmpeg: boolean;
   qpdf: boolean;
   gs: boolean;
   /** `sharp` (npm) loads: formula crops need it, together with `gs`. */
@@ -609,19 +613,27 @@ let probed: Promise<Capabilities> | null = null;
  */
 function capabilities(): Promise<Capabilities> {
   probed ??= (async () => {
-    const [tesseract, ocrmypdf, qpdf, gs, nice, sharp] = await Promise.all([
-      probeBinary("tesseract"),
-      probeBinary("ocrmypdf"),
-      probeBinary("qpdf"),
-      probeBinary("gs"),
-      process.platform === "win32"
-        ? Promise.resolve(false)
-        : probeBinary("nice"),
-      import("sharp").then(
-        () => true,
-        () => false,
-      ),
-    ]);
+    const [tesseract, ocrmypdf, qpdf, gs, nice, sharp, ffmpeg, asrModels] =
+      await Promise.all([
+        probeBinary("tesseract"),
+        probeBinary("ocrmypdf"),
+        probeBinary("qpdf"),
+        probeBinary("gs"),
+        process.platform === "win32"
+          ? Promise.resolve(false)
+          : probeBinary("nice"),
+        import("sharp").then(
+          () => true,
+          () => false,
+        ),
+        // Transcription needs both: ffmpeg to decode the container, and the
+        // Whisper weights the model fetch skips unless asked for.
+        probeBinary("ffmpeg", ["-version"]),
+        stat(join(process.env.DOCLING_RS_HOME ?? ".", ".models", "asr")).then(
+          (s) => s.isDirectory(),
+          () => false,
+        ),
+      ]);
     return {
       tesseract,
       ocrmypdf,
@@ -629,6 +641,8 @@ function capabilities(): Promise<Capabilities> {
       gs,
       sharp,
       nice,
+      ffmpeg,
+      asr: ffmpeg && asrModels,
       executionProvider: process.env.DOCLING_RS_EP ?? "cpu",
     };
   })();
@@ -1176,7 +1190,15 @@ async function handleConvert(
     });
     return;
   }
-  const convertOptions = doclingOptions.convert;
+  // Audio and video get their transcription options here rather than from the
+  // caller alone: the service can carry a default model, and a document must
+  // not be handed ASR settings that cannot apply to it.
+  const convertOptions = {
+    ...doclingOptions.convert,
+    ...asrArgsFor(filename, doclingOptions.convert, {
+      defaultModel: process.env.CONVERT_ASR_MODEL,
+    }),
+  };
 
   let bytes: Buffer;
   try {

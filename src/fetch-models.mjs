@@ -33,8 +33,15 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_URL =
   "https://raw.githubusercontent.com/docling-project/docling.rs/master/scripts/install/download_dependencies.sh";
 
-// ASR is Whisper-tiny and is for audio/video only; the vault converts documents.
-const SCRIPT_ARGS = ["--no-asr"];
+// ASR is Whisper and is for audio/video only, so it is opt-in: a service
+// converting invoices should not pay to download it, and the tenants that run
+// this for documents are sized for documents. `CONVERT_FETCH_ASR=1` asks for
+// the weights; transcription also needs ffmpeg on PATH.
+const wantAsr = ["1", "true", "yes", "on"].includes(
+  (process.env.CONVERT_FETCH_ASR ?? "").trim().toLowerCase(),
+);
+const SCRIPT_ARGS = wantAsr ? [] : ["--no-asr"];
+if (wantAsr) console.log("[fetch-models] including the ASR (Whisper) weights");
 
 // Same default as `server.ts`: the package root, not the CWD, so the fetch and
 // the service agree no matter where either is started from.
