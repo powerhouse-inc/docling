@@ -52,6 +52,7 @@ type V1Body = {
   errors?: unknown[];
   processing_time?: number;
   error?: string;
+  powerhouse?: Record<string, unknown>;
 };
 
 async function postV1(body: unknown) {
@@ -109,6 +110,19 @@ describe("POST /v1/convert/source", () => {
     expect(body.document?.html_content).toBeNull();
     expect(body.errors).toEqual([]);
     expect(typeof body.processing_time).toBe("number");
+  }, 60_000);
+
+  // The one thing a caller loses by speaking v1 rather than /convert is
+  // everything this service measures itself. It travels in a block upstream
+  // does not define, so this proves it survives the route and not just the
+  // mapper — and that `backend` is there to tell the two services apart.
+  it("carries this service's own measurements alongside the upstream fields", async () => {
+    const { body } = await postV1({
+      sources: [source("# Title\n\nHello there.")],
+      options: { to_formats: ["md"] },
+    });
+
+    expect(body.powerhouse?.backend).toBe("docling.rs");
   }, 60_000);
 
   it("populates json_content when json is requested", async () => {

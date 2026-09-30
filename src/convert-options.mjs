@@ -22,8 +22,13 @@
  * @typedef {Record<string, string | number | boolean>} DoclingConvertOptions
  * @typedef {Record<string, string | number | boolean>} DoclingChunkOptions
  * @typedef {{ option: string, detail: string }} OptionWarning
- * @typedef {{ convert: DoclingConvertOptions, chunk: DoclingChunkOptions, warnings: OptionWarning[] }} ParsedOptions
+ * @typedef {Record<string, string>} ServiceOptions
+ * @typedef {{ convert: DoclingConvertOptions, chunk: DoclingChunkOptions, service: ServiceOptions, warnings: OptionWarning[] }} ParsedOptions
  */
+
+// `service` is the third bag: /convert's own query parameters, which are not
+// ConvertOptions and never reach the binding. Figures are the case — this
+// service renders them itself, in a pass docling.rs knows nothing about.
 
 /** Query parameters that map straight onto a ConvertOptions boolean. */
 const QUERY_BOOLEANS = [
@@ -130,7 +135,7 @@ export function doclingOptionsFromQuery(query) {
     if (raw !== null) chunk[name] = asNumber(name, raw);
   }
 
-  return { convert, chunk, warnings: [] };
+  return { convert, chunk, service: {}, warnings: [] };
 }
 
 /** docling-serve option names this service handles outside the mapping. */
@@ -146,8 +151,10 @@ export function doclingOptionsFromV1(options) {
   const convert = {};
   /** @type {OptionWarning[]} */
   const warnings = [];
+  /** @type {ServiceOptions} */
+  const service = {};
   if (options === null || typeof options !== "object") {
-    return { convert, chunk: {}, warnings };
+    return { convert, chunk: {}, service, warnings };
   }
 
   for (const [key, value] of Object.entries(options)) {
@@ -189,6 +196,11 @@ export function doclingOptionsFromV1(options) {
       case "pipeline":
         if (typeof value === "string") convert.pipeline = value;
         break;
+      case "include_images":
+        // Upstream's nearest question to "give me the pictures", answered by
+        // this service's own figure pass rather than by a ConvertOptions field.
+        if (value === true) service.figures = "1";
+        break;
       default:
         warnings.push({
           option: key,
@@ -198,7 +210,7 @@ export function doclingOptionsFromV1(options) {
     }
   }
 
-  return { convert, chunk: {}, warnings };
+  return { convert, chunk: {}, service, warnings };
 }
 
 /**

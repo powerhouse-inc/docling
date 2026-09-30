@@ -17,6 +17,34 @@ export type Conversion = {
   format?: string;
   inputName?: string;
   timings?: { convertMs: number; chunkMs: number };
+  backend?: string;
+  textSource?: string;
+  needsOcr?: boolean;
+  pages?: number | null;
+  quality?: unknown;
+  ocrOffer?: unknown;
+  figures?: unknown[];
+  figureStats?: unknown;
+  normalised?: unknown;
+  ocr?: unknown;
+};
+
+/**
+ * What this service measures that docling-serve's shape has no field for.
+ * Absent when it measured none of it — which is also what a client gets from a
+ * real docling-serve, so the same read works against both.
+ */
+export type PowerhouseMeasurements = {
+  backend?: string;
+  textSource?: string;
+  needsOcr?: boolean;
+  pages?: number;
+  quality?: unknown;
+  ocrOffer?: unknown;
+  figures?: unknown[];
+  figureStats?: unknown;
+  normalised?: unknown;
+  ocr?: unknown;
 };
 
 export type ConvertDocumentResponse = {
@@ -31,6 +59,7 @@ export type ConvertDocumentResponse = {
   status: "success" | "partial_success";
   errors: Array<Record<string, unknown>>;
   processing_time: number;
+  powerhouse?: PowerhouseMeasurements;
 };
 
 export function toConvertDocumentResponse(

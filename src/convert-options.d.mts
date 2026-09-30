@@ -4,9 +4,13 @@ export type DoclingConvertOptions = Record<string, string | number | boolean>;
 export type DoclingChunkOptions = Record<string, string | number | boolean>;
 export type OptionWarning = { option: string; detail: string };
 
+/** `POST /convert`'s own query parameters, which never reach the binding. */
+export type ServiceOptions = Record<string, string>;
+
 export type ParsedOptions = {
   convert: DoclingConvertOptions;
   chunk: DoclingChunkOptions;
+  service: ServiceOptions;
   /** Options with no equivalent here, reported rather than dropped. */
   warnings: OptionWarning[];
 };

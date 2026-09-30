@@ -151,6 +151,20 @@ describe("doclingOptionsFromV1", () => {
     expect(out.convert).toEqual({});
   });
 
+  // Figures are this service's own pass over the pages, switched on with
+  // /convert's ?figures=1 rather than any ConvertOptions field. include_images
+  // is docling-serve's nearest question, so it is the one that turns it on.
+  it("turns include_images into the service's own figures pass", () => {
+    const out = doclingOptionsFromV1({ include_images: true });
+    expect(out.service).toEqual({ figures: "1" });
+    expect(out.convert).toEqual({});
+    expect(out.warnings).toEqual([]);
+  });
+
+  it("does not ask for figures when include_images is false", () => {
+    expect(doclingOptionsFromV1({ include_images: false }).service).toEqual({});
+  });
+
   it("does not warn about to_formats, which is handled by the caller", () => {
     expect(doclingOptionsFromV1({ to_formats: ["md", "json"] }).warnings).toEqual([]);
   });

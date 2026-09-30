@@ -120,3 +120,55 @@ describe("toConvertDocumentResponse", () => {
     expect(JSON.stringify(out.errors)).toContain("table_mode");
   });
 });
+
+// The service measures more than docling-serve's shape has room for: how much
+// of the text survived, where the text came from, whether a scan is worth
+// offering OCR for, the figures it cut. Upstream has no field for any of it, so
+// it travels in a block of our own that an upstream-shaped client ignores.
+describe("toConvertDocumentResponse: this service's own measurements", () => {
+  const RICH = {
+    ...CONVERSION,
+    backend: "docling.rs",
+    textSource: "pdfjs",
+    needsOcr: false,
+    pages: 12,
+    quality: { coverage: 0.94, garbled: false },
+    ocrOffer: { via: "tesseract", estimateSeconds: 30 },
+    figures: [{ id: "p1-f1", base64: "iVBOR" }],
+    figureStats: { kept: 1, dropped: 0 },
+  };
+
+  it("carries them under a namespace of its own, beside the upstream fields", () => {
+    const out = toConvertDocumentResponse(RICH, { json: false, warnings: [] });
+
+    // The upstream contract is untouched.
+    expect(out.document?.md_content).toBe(CONVERSION.markdown);
+    expect(out.status).toBe("success");
+
+    expect(out.powerhouse).toMatchObject({
+      backend: "docling.rs",
+      textSource: "pdfjs",
+      needsOcr: false,
+      pages: 12,
+      quality: { coverage: 0.94, garbled: false },
+      ocrOffer: { via: "tesseract", estimateSeconds: 30 },
+      figureStats: { kept: 1, dropped: 0 },
+    });
+    expect(out.powerhouse?.figures).toHaveLength(1);
+  });
+
+  // A plain conversion measured none of this; an object of nulls would be
+  // noise, and a client reading `powerhouse?.quality` handles both the same.
+  it("leaves the block out when there was nothing to put in it", () => {
+    const out = toConvertDocumentResponse(CONVERSION, { json: false, warnings: [] });
+    expect(out.powerhouse).toBeUndefined();
+  });
+
+  it("omits what was not measured rather than reporting it as null", () => {
+    const out = toConvertDocumentResponse(
+      { ...CONVERSION, textSource: "docling", quality: null, figures: [] },
+      { json: false, warnings: [] },
+    );
+    expect(out.powerhouse).toEqual({ textSource: "docling" });
+  });
+});
