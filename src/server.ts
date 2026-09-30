@@ -306,11 +306,13 @@ function startHeartbeat(res: ServerResponse, intervalMs: number) {
 // The docling-serve v1 surface lives in v1.mjs: parsing, option warnings and
 // the ConvertDocumentResponse mapping, pure and tested apart from the server.
 import {
+  doclingOptionsFromQuery,
+  doclingOptionsFromV1,
+} from "./convert-options.mjs";
+import {
   parseSourceRequest,
   toConvertDocumentResponse,
-  unsupportedOptionWarnings,
   wantsJson,
-  wantsOcr,
 } from "./v1.mjs";
 
 /** This service's own version, reported at /version for v1 clients. */
@@ -507,10 +509,15 @@ async function convertOnce(
   file: string,
   usePipeline: boolean,
   progress: ProgressHooks = {},
+  options: Record<string, string | number | boolean> = {},
 ): Promise<Conversion> {
   const library = await docling();
   const { chunkFileAsync, convertFileAsync } = library;
-  const warm = usePipeline ? pipelineFor(library.Pipeline) : null;
+  // The warm pipeline ignores per-call options — measured, and already the
+  // reason the OCR path bypasses it — so a request that set any of them takes
+  // the module-level call instead, trading model reuse for being obeyed.
+  const withOptions = Object.keys(options).length > 0;
+  const warm = usePipeline && !withOptions ? pipelineFor(library.Pipeline) : null;
 
   progress.onPhase?.("reading");
   const convertStart = Date.now();
@@ -531,7 +538,10 @@ async function convertOnce(
     format = extname(file).slice(1).toLowerCase() || "pdf";
     inputName = basename(file);
   } else {
-    const converted = await convertFileAsync(file, { to: "markdown" });
+    const converted = await convertFileAsync(file, {
+      to: "markdown",
+      ...options,
+    });
     markdown = converted.content;
     format = converted.format;
     inputName = converted.inputName;
@@ -540,7 +550,18 @@ async function convertOnce(
 
   progress.onPhase?.("structuring");
   const chunkStart = Date.now();
-  const chunks = await chunkFileAsync(file);
+  // `chunkFileAsync` re-converts the file with defaults and takes no
+  // ConvertOptions, so with options set it would chunk a different document
+  // from the one the markdown came from. The document is converted once more
+  // to docling JSON — with the same options — and chunked from that. It is
+  // the shortcut the plain path rejects for table fidelity (cells come back
+  // associated differently), accepted here because chunks that disagree with
+  // the markdown are worse than chunks whose tables are cut less cleanly.
+  const chunks = withOptions
+    ? await library.chunkDocumentAsync(
+        (await convertFileAsync(file, { to: "json", ...options })).content,
+      )
+    : await chunkFileAsync(file);
   const chunkMs = Date.now() - chunkStart;
 
   return {
@@ -1141,6 +1162,20 @@ async function handleConvert(
     return;
   }
 
+  // Everything docling.rs accepts, read off the query. `?ocr=1` keeps its old
+  // meaning; the rest is new surface. A bad value is the caller's mistake and
+  // is answered before any work starts.
+  let doclingOptions;
+  try {
+    doclingOptions = doclingOptionsFromQuery(url.searchParams);
+  } catch (error) {
+    sendJson(res, 400, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  const convertOptions = doclingOptions.convert;
+
   let bytes: Buffer;
   try {
     bytes = await readBody(req);
@@ -1249,7 +1284,7 @@ async function handleConvert(
     let refusal: unknown = null;
 
     try {
-      result = await convertOnce(file, usePipeline, hooks);
+      result = await convertOnce(file, usePipeline, hooks, convertOptions);
     } catch (error) {
       // Rewrite only when pdfium actually refused the file, and only for PDFs.
       if (!isPdf || !isFormatError(error)) throw error;
@@ -1264,7 +1299,7 @@ async function handleConvert(
         const target = join(dir, `normalised-${rewriter.tool}.pdf`);
         if (!(await run(rewriter.tool, rewriter.args(file, target)))) continue;
         try {
-          result = await convertOnce(target, usePipeline, hooks);
+          result = await convertOnce(target, usePipeline, hooks, convertOptions);
           normalised = rewriter.tool;
           break;
         } catch {
@@ -1342,7 +1377,7 @@ async function handleConvert(
             caps.nice,
           );
           if ("path" in out) {
-            result = await convertOnce(out.path, true, hooks);
+            result = await convertOnce(out.path, true, hooks, convertOptions);
             ocr = "tesseract";
             textSource = "tesseract";
           } else if (dependencies.ocr) {
@@ -1723,8 +1758,13 @@ async function handleV1ConvertSource(
     }
   }
 
+  // The v1 names are translated onto the binding's and handed to /convert as
+  // query parameters, which parses them back — one option parser, two doors.
+  const mapped = doclingOptionsFromV1(options);
   const query = new URLSearchParams({ filename: source.filename });
-  if (wantsOcr(options)) query.set("ocr", "1");
+  for (const [name, value] of Object.entries(mapped.convert)) {
+    query.set(name, String(value));
+  }
 
   const inner = Readable.from([bytes]) as unknown as IncomingMessage;
   inner.headers = {};
@@ -1748,7 +1788,7 @@ async function handleV1ConvertSource(
     200,
     toConvertDocumentResponse(
       out as unknown as Parameters<typeof toConvertDocumentResponse>[0],
-      { json: wantsJson(options), warnings: unsupportedOptionWarnings(options) },
+      { json: wantsJson(options), warnings: mapped.warnings },
     ),
   );
 }

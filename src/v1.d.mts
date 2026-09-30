@@ -8,12 +8,8 @@ export type ParsedSource = {
 };
 export function parseSourceRequest(body: Record<string, unknown>): ParsedSource;
 export function wantsJson(options: Record<string, unknown> | undefined): boolean;
-export function wantsOcr(options: Record<string, unknown> | undefined): boolean;
 
 export type OptionWarning = { option: string; detail: string };
-export function unsupportedOptionWarnings(
-  options: Record<string, unknown> | undefined,
-): OptionWarning[];
 
 export type Conversion = {
   markdown: string;

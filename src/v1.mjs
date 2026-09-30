@@ -24,9 +24,6 @@
  * - **Chunking as its own call.** Chunks come back with every conversion.
  */
 
-/** Options this service genuinely acts on. Everything else is a warning. */
-const HONOURED_OPTIONS = new Set(["to_formats", "do_ocr", "force_ocr"]);
-
 /**
  * @typedef {object} ParsedSource
  * @property {"file" | "http"} kind
@@ -115,34 +112,8 @@ export function wantsJson(options) {
 }
 
 /**
- * `do_ocr` defaults true upstream, but here OCR is chosen from the file by the
- * routing ladder; only an explicit force is passed through.
- * @param {Record<string, any> | undefined} options
- * @returns {boolean}
- */
-export function wantsOcr(options) {
-  return options?.force_ocr === true;
-}
-
-/**
  * @typedef {{ option: string, detail: string }} OptionWarning
  */
-
-/**
- * @param {Record<string, any> | undefined} options
- * @returns {OptionWarning[]}
- */
-export function unsupportedOptionWarnings(options) {
-  if (options === null || typeof options !== "object") return [];
-  return Object.keys(options)
-    .filter((key) => !HONOURED_OPTIONS.has(key))
-    .sort()
-    .map((option) => ({
-      option,
-      detail:
-        "not supported by this conversion service and was ignored; it reads OCR, tables and layout from the file itself",
-    }));
-}
 
 /**
  * @typedef {object} Conversion

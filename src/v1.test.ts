@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  parseSourceRequest,
-  toConvertDocumentResponse,
-  unsupportedOptionWarnings,
-  wantsJson,
-  wantsOcr,
-} from "./v1.mjs";
+import { parseSourceRequest, toConvertDocumentResponse, wantsJson } from "./v1.mjs";
 
 const CONVERSION = {
   markdown: "# Doc\n\nParagraph.",
@@ -87,51 +81,11 @@ describe("parseSourceRequest", () => {
   });
 });
 
-describe("wantsJson / wantsOcr", () => {
+describe("wantsJson", () => {
   it("asks for json only when to_formats lists it", () => {
     expect(wantsJson({ to_formats: ["md", "json"] })).toBe(true);
     expect(wantsJson({ to_formats: ["md"] })).toBe(false);
     expect(wantsJson({})).toBe(false);
-  });
-
-  // do_ocr defaults true upstream, but this service decides OCR from the file
-  // itself; only an explicit force is passed on as ?ocr=1.
-  it("forces OCR only when force_ocr is set", () => {
-    expect(wantsOcr({ force_ocr: true })).toBe(true);
-    expect(wantsOcr({ do_ocr: true })).toBe(false);
-    expect(wantsOcr({})).toBe(false);
-  });
-});
-
-describe("unsupportedOptionWarnings", () => {
-  // Accepting an option and ignoring it is the failure mode worth avoiding:
-  // a workflow sets table_mode, sees success, and never learns it did nothing.
-  it("names every option this service cannot honour", () => {
-    const warnings = unsupportedOptionWarnings({
-      to_formats: ["md"],
-      force_ocr: true,
-      table_mode: "accurate",
-      page_range: [1, 5],
-      pdf_backend: "pypdfium2",
-      do_code_enrichment: true,
-    });
-    const named = warnings.map((w) => w.option).sort();
-    expect(named).toEqual([
-      "do_code_enrichment",
-      "page_range",
-      "pdf_backend",
-      "table_mode",
-    ]);
-  });
-
-  it("says nothing about the options it does honour", () => {
-    expect(
-      unsupportedOptionWarnings({ to_formats: ["md", "json"], force_ocr: true, do_ocr: false }),
-    ).toEqual([]);
-  });
-
-  it("says nothing for an absent options block", () => {
-    expect(unsupportedOptionWarnings(undefined)).toEqual([]);
   });
 });
 
