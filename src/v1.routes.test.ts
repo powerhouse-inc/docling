@@ -138,18 +138,37 @@ describe("POST /v1/convert/source", () => {
   it("reports ignored options as partial_success rather than swallowing them", async () => {
     const { status, body } = await postV1({
       sources: [source("# Title\n\nHello.")],
-      options: { to_formats: ["md"], table_mode: "accurate", page_range: [1, 2] },
+      options: { to_formats: ["md"], table_mode: "fast", page_range: [1, 2] },
     });
 
     expect(status).toBe(200);
     expect(body.status).toBe("partial_success");
     const named = JSON.stringify(body.errors);
-    // table_mode has no equivalent in the binding, so it is reported...
+    // table_mode: "fast" asks for something the binding will not do, so it is
+    // reported (unlike "accurate", which is what it does anyway)...
     expect(named).toContain("table_mode");
     // ...while page_range does (it becomes `pages`), so it is not.
     expect(named).not.toContain("page_range");
     // The conversion still happened.
     expect(body.document?.md_content).toContain("Hello.");
+  }, 60_000);
+
+  // The piece sends table_mode and do_table_structure on every request, so
+  // this is the ordinary case, not an edge one: it must come back clean.
+  it("is a plain success when the options only describe what it already does", async () => {
+    const { body } = await postV1({
+      sources: [source("# Title\n\nHello.")],
+      options: {
+        to_formats: ["md"],
+        do_ocr: true,
+        table_mode: "accurate",
+        do_table_structure: true,
+        image_export_mode: "placeholder",
+      },
+    });
+
+    expect(body.status).toBe("success");
+    expect(body.errors).toEqual([]);
   }, 60_000);
 
   it("rejects a body with no sources", async () => {
