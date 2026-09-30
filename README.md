@@ -8,6 +8,27 @@ The Powerhouse Knowledge Vault talks to it through its `convert` subgraph and kn
 CONVERT_SERVICE_URL=http://<host>:5011
 ```
 
+
+## docling-serve v1 compatibility
+
+Powerhouse's workflow piece for docling (`@powerhousedao/piece-docling`) speaks docling-serve's v1 API, so this service answers a subset of it:
+
+| Route | Notes |
+| --- | --- |
+| `GET /version` | Reports this service's version as `docling-serve`; the piece's connection check reads it as the connection label |
+| `POST /v1/convert/source` | `{ sources: [one file or http source], options, target: { kind: "inbody" } }` → `ConvertDocumentResponse` |
+
+`/convert`, `/health` and `/progress/:job` are unchanged — the v1 routes translate onto them rather than reimplementing anything, so the OCR ladder, the normalising retries, figures and the extraction score all still apply.
+
+What it deliberately does not do:
+
+- **One source per request.** docling-serve batches up to three; this service converts one document at a time.
+- **No async job routes.** `/v1/status/poll` and `/v1/result` need a store of finished conversions; here `POST /convert` holds the connection and `/progress/:job` only watches one already running.
+- **No chunk route.** Chunks come back with every conversion; ask for `to_formats: ["md","json"]` and they arrive as `document.json_content`.
+- **Most conversion options are ignored, and say so.** This service reads OCR, tables and layout from the file itself, so `table_mode`, `page_range`, `pdf_backend`, the enrichment flags and the rest have no equivalent. An option it cannot honour comes back in `errors[]` with `status: "partial_success"` rather than being accepted in silence — only `to_formats`, `do_ocr` and `force_ocr` do anything.
+
+A caller that wants this service's own richer answer — the extraction score, which OCR rung read the file, the figures — should use `POST /convert` directly, or the `@powerhousedao/piece-convert` workflow piece. The v1 response shape has nowhere to put any of it.
+
 ## Why it is its own deployable
 
 **It cannot live in the Switchboard image.** `docling.rs` publishes `linux-x64-gnu`,
