@@ -154,10 +154,12 @@ const V1_HANDLED_ELSEWHERE = new Set(["to_formats", "from_formats"]);
  * honoured, and still warns. docling.rs always recovers table structure, and
  * does it accurately; it has no faster, rougher mode to drop to.
  */
-const V1_INERT_VALUES = {
-  table_mode: "accurate",
-  do_table_structure: true,
-};
+const V1_INERT_VALUES = new Map(
+  /** @type {[string, unknown][]} */ ([
+    ["table_mode", "accurate"],
+    ["do_table_structure", true],
+  ]),
+);
 
 /**
  * Translate docling-serve's `options` block onto the binding's names.
@@ -177,7 +179,7 @@ export function doclingOptionsFromV1(options) {
 
   for (const [key, value] of Object.entries(options)) {
     if (V1_HANDLED_ELSEWHERE.has(key)) continue;
-    if (key in V1_INERT_VALUES && value === V1_INERT_VALUES[key]) continue;
+    if (V1_INERT_VALUES.has(key) && V1_INERT_VALUES.get(key) === value) continue;
     switch (key) {
       case "do_ocr":
         // The binding's default is to OCR; only the negative needs sending.
