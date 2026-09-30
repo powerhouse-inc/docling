@@ -135,11 +135,36 @@ describe("doclingOptionsFromV1", () => {
     });
   });
 
+  // An option this service has no field for, but whose requested value is
+  // what it already does, cost the caller nothing — so it is not a warning.
+  // The piece sends table_mode and do_table_structure on every request
+  // (both are required props with these defaults), and warning on them made
+  // every single conversion partial_success, which drowns the real ones.
+  it("is silent about an option whose value is what it already does", () => {
+    const out = doclingOptionsFromV1({
+      table_mode: "accurate",
+      do_table_structure: true,
+    });
+    expect(out.warnings).toEqual([]);
+    expect(out.convert).toEqual({});
+  });
+
+  // The other value of the same option is a real request that will not be
+  // honoured, and that is still worth saying.
+  it("still warns when the value asks for something it will not do", () => {
+    expect(
+      doclingOptionsFromV1({ table_mode: "fast" }).warnings.map((w) => w.option),
+    ).toEqual(["table_mode"]);
+    expect(
+      doclingOptionsFromV1({ do_table_structure: false }).warnings.map((w) => w.option),
+    ).toEqual(["do_table_structure"]);
+  });
+
   // Options with no equivalent are still reported, so a caller learns its
   // setting did nothing rather than assuming it worked.
   it("warns about options the binding has no equivalent for", () => {
     const out = doclingOptionsFromV1({
-      table_mode: "accurate",
+      table_mode: "fast",
       pdf_backend: "pypdfium2",
       document_timeout: 30,
     });

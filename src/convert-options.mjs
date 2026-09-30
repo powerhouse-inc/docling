@@ -142,6 +142,24 @@ export function doclingOptionsFromQuery(query) {
 const V1_HANDLED_ELSEWHERE = new Set(["to_formats", "from_formats"]);
 
 /**
+ * Options this service has no field for, but whose listed value describes
+ * what it already does. Asking for it costs the caller nothing, so it is not
+ * worth a warning — and warning anyway is not a harmless extra: the piece
+ * sends `table_mode` and `do_table_structure` on every request, because both
+ * are required props with exactly these defaults. Reporting them turned every
+ * single conversion into `partial_success` and buried the warnings that mean
+ * something.
+ *
+ * The other value of the same option is a genuine request that will not be
+ * honoured, and still warns. docling.rs always recovers table structure, and
+ * does it accurately; it has no faster, rougher mode to drop to.
+ */
+const V1_INERT_VALUES = {
+  table_mode: "accurate",
+  do_table_structure: true,
+};
+
+/**
  * Translate docling-serve's `options` block onto the binding's names.
  * @param {Record<string, any> | undefined} options
  * @returns {ParsedOptions}
@@ -159,6 +177,7 @@ export function doclingOptionsFromV1(options) {
 
   for (const [key, value] of Object.entries(options)) {
     if (V1_HANDLED_ELSEWHERE.has(key)) continue;
+    if (key in V1_INERT_VALUES && value === V1_INERT_VALUES[key]) continue;
     switch (key) {
       case "do_ocr":
         // The binding's default is to OCR; only the negative needs sending.
